@@ -1,0 +1,9 @@
+digraph G {
+"local" -> "body"[label="Broadcaster: /localizer_node\nAverage rate: 50.220 Hz\nMost recent transform: 1770260185.071 ( 0.050 sec old)\nBuffer length: 4.978 sec\n"];
+"map" -> "local"[label="Broadcaster: /localizer_node\nAverage rate: 50.220 Hz\nMost recent transform: 1770260185.071 ( 0.050 sec old)\nBuffer length: 4.978 sec\n"];
+"body" -> "base_link"[label="Broadcaster: /base_to_body\nAverage rate: 98.509 Hz\nMost recent transform: 1770260185.123 ( -0.002 sec old)\nBuffer length: 4.984 sec\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1770260185.121"[ shape=plaintext ] ;
+ }->"map";
+}

@@ -1,0 +1,8 @@
+prefix=/root/HongTu/G1Nav2D/devel
+
+Name: fastlio
+Description: Description of fastlio
+Version: 0.0.0
+Cflags: -I/root/HongTu/G1Nav2D/devel/include
+Libs: -L${prefix}/lib 
+Requires: 

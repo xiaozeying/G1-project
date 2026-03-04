@@ -1,18 +1,46 @@
 <launch>
-    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0.0 0 0.0 3.1416 3.1416 0 /body /base_link 1" /> 
+    <!-- Map paths (override at launch time) -->
+    <arg name="pcd_map" default="/root/HongTu/pcd/test7.pcd" />
+    <arg name="map2d_yaml" default="/root/HongTu/map/test7.yaml" />
+    <arg name="ground_pcd" default="/root/HongTu/ground_map/ground_test7.pcd" />
+    <!-- Run RViz on the same machine (usually false when visualizing from an external PC) -->
+    <arg name="rviz" default="true" />
+
+    <!-- Relocalization logger: optionally run slam_reloc.py in a dedicated terminal.
+         Example: roslaunch fastlio navigation.launch reloc_new_terminal:=true
+         Note: requires a terminal emulator inside the ROS1 environment (e.g., xterm). -->
+    <arg name="reloc_new_terminal" default="false" />
+    <arg name="reloc_launch_prefix" default="xterm -T slam_reloc -e" />
+
+    <!-- body -> base_link: roll=180° for inverted sensor mounting (x y z yaw pitch roll) -->
+    <node pkg="tf" type="static_transform_publisher" name="base_to_body" args="0 0 0 0 0 3.1416 /body /base_link 5" /> 
     <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+    	<arg name="publish_freq" value="10.0"/>
     </include>
     <rosparam command="load" file="$(find fastlio)/config/localize.yaml" />
     <node pkg="fastlio" type="localizer_node" name="localizer_node" output="screen"/>
-    <node pkg="fastlio" type="slam_reloc.py" name="slam_reloc" output="screen">
-        <param name="pcd_path" value="/home/unitree/HongTu/G1Nav2D/src/fastlio2/PCD/map.pcd" />
-    </node>
+
+    <!-- slam_reloc.py: either in roslaunch screen, or in a separate terminal -->
+    <group if="$(arg reloc_new_terminal)">
+        <node launch-prefix="$(arg reloc_launch_prefix)" pkg="fastlio" type="slam_reloc.py" name="slam_reloc" output="screen">
+            <param name="pcd_path" value="$(arg pcd_map)" />
+        </node>
+    </group>
+    <group unless="$(arg reloc_new_terminal)">
+        <node pkg="fastlio" type="slam_reloc.py" name="slam_reloc" output="screen">
+            <param name="pcd_path" value="$(arg pcd_map)" />
+        </node>
+    </group>
     <include file="$(find fastlio)/launch/gridmap_load.launch">
             <arg name="rviz" value="false"/>
+            <arg name="2dmap_file" value="$(arg map2d_yaml)"/>
     </include>
-    <include file="$(find tool)/launch/downsample_pointcloud.launch">
-        <arg name="pcd_file" value="/home/unitree/HongTu/G1Nav2D/src/fastlio2/PCD/ground_map.pcd"/>
-    </include>
+    <!-- Optional: publish a static, downsampled pointcloud from a PCD file (for debugging). -->
+    <group if="$(eval arg('ground_pcd') != '')">
+        <include file="$(find tool)/launch/downsample_pointcloud.launch">
+            <arg name="pcd_file" value="$(arg ground_pcd)"/>
+        </include>
+    </group>
 
     <include file="$(find xju_pnc)/launch/move_base.launch" />
 
@@ -24,5 +52,8 @@
 
     <include file="$(find velocity_smoother_ema)/launch/velocity_smoother_ema.launch">
     </include>
-    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fastlio)/rviz/localize.rviz" />
+    <group if="$(arg rviz)">
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fastlio)/rviz/localize.rviz" />
+    </group>
 </launch>
+

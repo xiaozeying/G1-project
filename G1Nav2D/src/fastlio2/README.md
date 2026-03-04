@@ -41,7 +41,7 @@ rosservice call /save_map "{save_path: '/home/nvidia/map_delet.pcd', resolution:
 
 2. 重定位
 ```shell
-rosservice call /slam_reloc "{pcd_path: 'you_pcd_path.pcd', x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}" 
+rosservice call /slam_reloc "{pcd_path: '/root/HongTu/pcd/test6.pcd', x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}" 
 ```
 
 ## 点云距离裁剪（可用于抑制玻璃远点）
@@ -57,8 +57,8 @@ rosservice call /slam_reloc "{pcd_path: 'you_pcd_path.pcd', x: 0.0, y: 0.0, z: 0
 示例（室内可先从 20~30m 试起）：
 ```yaml
 lio_builder:
-	min_point_range: 0.0
-	max_point_range: 25.0
+  min_point_range: 0.0
+  max_point_range: 25.0
 ```
 
 ## 特别感谢

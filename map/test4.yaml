@@ -1,0 +1,7 @@
+image: /root/HongTu/map/test4.pgm
+resolution: 0.050000
+origin: [-10.250000, -4.600000, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+
