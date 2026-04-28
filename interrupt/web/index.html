@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Interrupt LiveKit Playground</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f4efe8;
+        --panel: rgba(255, 252, 247, 0.88);
+        --line: rgba(62, 39, 18, 0.16);
+        --text: #23180e;
+        --muted: #705b4a;
+        --accent: #b8571b;
+        --accent-strong: #8e3f10;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "IBM Plex Sans", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(250, 182, 109, 0.38), transparent 32%),
+          radial-gradient(circle at bottom right, rgba(160, 85, 31, 0.26), transparent 30%),
+          linear-gradient(160deg, #fbf6ef 0%, #efe5d8 100%);
+      }
+      main {
+        width: min(1100px, calc(100% - 32px));
+        margin: 24px auto 40px;
+        display: grid;
+        gap: 18px;
+      }
+      .hero, .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        backdrop-filter: blur(14px);
+        border-radius: 24px;
+        box-shadow: 0 18px 48px rgba(67, 39, 13, 0.08);
+      }
+      .hero { padding: 24px; }
+      h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 48px); line-height: 1; }
+      p { margin: 0; color: var(--muted); }
+      .grid { display: grid; gap: 18px; grid-template-columns: 360px 1fr; }
+      .panel { padding: 18px; }
+      .panel h2 { margin: 0 0 14px; font-size: 18px; }
+      label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font: inherit;
+        color: var(--text);
+        margin-bottom: 12px;
+      }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.primary { background: var(--accent); color: #fff9f5; }
+      button.secondary { background: rgba(99, 70, 44, 0.08); color: var(--text); }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      .status-card {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 10px;
+      }
+      .pill {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.58);
+      }
+      .pill strong, .mono { font-family: "IBM Plex Mono", monospace; }
+      .log, .transcript {
+        min-height: 210px;
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.64);
+      }
+      .transcript-entry, .log-entry {
+        padding: 10px 0;
+        border-bottom: 1px dashed rgba(62, 39, 18, 0.12);
+      }
+      .transcript-entry:last-child, .log-entry:last-child { border-bottom: 0; }
+      .speaker {
+        display: inline-block;
+        min-width: 52px;
+        color: var(--accent-strong);
+        font-weight: 600;
+      }
+      .muted { color: var(--muted); }
+      audio { width: 100%; margin-top: 12px; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>Interrupt LiveKit Playground</h1>
+        <p>浏览器直接通过 LiveKit WebRTC 与 Gemini Live 智能体对话，支持网页端打断、浏览器回声消除和实时转写。</p>
+      </section>
+      <section class="grid">
+        <div class="panel">
+          <h2>连接参数</h2>
+          <label for="wsUrl">LiveKit URL</label>
+          <input id="wsUrl" />
+          <label for="roomName">房间名</label>
+          <input id="roomName" />
+          <label for="identity">身份标识</label>
+          <input id="identity" />
+          <div class="row">
+            <button id="connectBtn" class="primary">连接并开始</button>
+            <button id="disconnectBtn" class="secondary" disabled>断开</button>
+            <button id="muteBtn" class="secondary" disabled>麦克风静音</button>
+          </div>
+          <div class="status-card">
+            <div class="pill"><div class="muted">房间状态</div><strong id="connectionState">未连接</strong></div>
+            <div class="pill"><div class="muted">麦克风</div><strong id="micState">未开启</strong></div>
+            <div class="pill"><div class="muted">远端音频</div><strong id="remoteState">无</strong></div>
+          </div>
+          <audio id="remoteAudio" autoplay playsinline controls></audio>
+        </div>
+        <div class="panel">
+          <h2>实时转写</h2>
+          <div id="transcript" class="transcript"></div>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>会话日志</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

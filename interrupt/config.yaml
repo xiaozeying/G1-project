@@ -1,0 +1,64 @@
+livekit:
+  url: ws://127.0.0.1:7880
+  api_key: devkey
+  api_secret: secret
+
+agent:
+  name: interrupt-web-agent
+  model: gemini-2.5-flash-native-audio-preview-12-2025
+  voice: Aoede
+  language: ""
+  instructions: |
+    你是一个中文语音助手，运行在本地 LiveKit Agents 会话中。
+    请用自然、简洁、直接的中文回答。
+    用户可能在你说话时打断你，你必须允许这种交互方式，不要因为被打断而困惑。
+  interruption_acknowledgement: 好的，那您还有其他需求吗？
+  enable_input_transcription: true
+  enable_output_transcription: true
+  allow_interruptions: true
+  interruption_mode: vad
+  min_endpointing_delay_ms: 300
+  max_endpointing_delay_ms: 1200
+  min_interruption_duration_ms: 80
+  false_interruption_timeout_ms: 500
+  aec_warmup_duration_ms: 0
+  user_away_timeout_ms: 300000
+
+console:
+  input_device: ""
+  output_device: ""
+  text_mode: false
+  record: false
+
+rtc_endpoint:
+  enabled: false
+  room_name: interrupt-demo
+  identity: robot-rtc-endpoint
+  publish_microphone: true
+  subscribe_audio: true
+  input_device: ""
+  output_device: ""
+  auto_create_room: true
+  auto_dispatch_agent: true
+  auto_redispatch_on_agent_disconnect: true
+  redispatch_cooldown_s: 8
+  agent_absence_check_interval_s: 20
+
+integrations:
+  wake_word_factory: ""
+  mcp_stdio_command: ""
+  mcp_http_urls: []
+
+web:
+  host: 127.0.0.1
+  port: 3000
+  room_name: interrupt-demo
+  identity_prefix: web-user
+  token_ttl_minutes: 60
+
+feedback:
+  assistant_audio_mode: om1_mirror
+  local_tool_ack_audio_mode: om1_mirror
+
+logging:
+  level: INFO

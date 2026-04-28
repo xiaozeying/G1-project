@@ -1,0 +1,17 @@
+[Unit]
+Description=Interrupt Robot Frontgate
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/HongTu/interrupt
+ExecStart=%h/HongTu/interrupt/run_robot_frontgate_session.sh
+Restart=always
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
