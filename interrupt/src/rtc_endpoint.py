@@ -13,6 +13,7 @@ from livekit import rtc
 from src.console_audio_compat import _resample_i16
 from src.livekit_room import build_room_token, ensure_room_ready
 from src.settings import RtcEndpointConfig, load_settings
+from src.tts_mute_state import should_mute_remote_audio
 
 
 LOGGER = logging.getLogger("interrupt.rtc_endpoint")
@@ -235,7 +236,9 @@ class OutputPlayback:
         self._stream.close()
         self._stream = None
 
-    def push_frame(self, frame: rtc.AudioFrame) -> None:
+    def push_frame(self, frame: rtc.AudioFrame, *, source_identity: str = "") -> None:
+        if should_mute_remote_audio(identity=source_identity):
+            return
         samples = np.frombuffer(frame.data, dtype=np.int16).copy()
         if self._aec is not None and self._aec.enabled:
             self._aec.process_reverse(_resample_i16(samples, frame.sample_rate, TARGET_SAMPLE_RATE))
@@ -864,7 +867,10 @@ class RobotRtcEndpoint:
         )
         try:
             async for event in stream:
-                self._playback.push_frame(event.frame)
+                self._playback.push_frame(
+                    event.frame,
+                    source_identity=getattr(participant, "identity", ""),
+                )
         except asyncio.CancelledError:
             raise
         except Exception:

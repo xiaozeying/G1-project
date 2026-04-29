@@ -189,6 +189,20 @@ cd /home/zz/HongTu/interrupt
 - 显式锁定回复语言
 - 恢复自动跟随用户语言
 
+如果要开始试“专用 yue-HK TTS”，可额外配置：
+
+```bash
+INTERRUPT_CANTONESE_TTS_ENABLED=1
+INTERRUPT_CANTONESE_TTS_VOICE=zh-HK-HiuGaaiNeural
+# 可选：mpg123 / ffplay / mpv，默认自动探测
+INTERRUPT_CANTONESE_TTS_PLAYBACK_COMMAND=mpg123
+# 默认会在粤语本地 TTS 播放窗口内临时压掉远端 agent 音频
+INTERRUPT_CANTONESE_TTS_MUTE_REMOTE_AUDIO=1
+```
+
+当前实现只把 `zh-YUE` 本地播报单独路由到微软 `edge-tts` 粤语音色；
+普通话和英语仍保持原有播报链路。
+
 列出可用音频设备：
 
 ```bash

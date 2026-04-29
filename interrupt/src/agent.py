@@ -535,6 +535,25 @@ def _preferred_reply_language() -> str:
         return _LAST_DETECTED_USER_LANGUAGE or REPLY_LANGUAGE_MANDARIN
 
 
+def _log_assistant_language_alignment(text: str) -> None:
+    expected = _preferred_reply_language()
+    actual = _detect_reply_language(text)
+    if actual == expected:
+        LOGGER.info(
+            "assistant reply language aligned: expected=%s actual=%s text=%r",
+            expected,
+            actual,
+            text,
+        )
+        return
+    LOGGER.warning(
+        "assistant reply language mismatch: expected=%s actual=%s text=%r",
+        expected,
+        actual,
+        text,
+    )
+
+
 def _record_local_tool_ack(text: str) -> None:
     normalized = _normalize_assistant_text(text)
     if not normalized:
@@ -572,6 +591,7 @@ def _speak_local_tool_ack(text: str) -> None:
         return
     if SPEECH_FEEDBACK.speak_local_tool_ack(
         normalized,
+        language=_preferred_reply_language(),
         normalize_tts_text=_normalize_tts_text,
     ):
         _record_local_tool_ack(normalized)
@@ -1567,9 +1587,11 @@ def _effective_instructions() -> str:
         "\n\n语言与打断交互规则：\n"
         "1. 默认跟随用户最近一轮输入所使用的语言回答；用户说普通话就用普通话，用户说粤语/广东话就用粤语，用户说英语就用英语。\n"
         "2. 只有当用户明确要求切换回复语言时，才暂时固定使用该语言；当用户要求恢复自动或按他说的语言回答时，恢复自动跟随。\n"
-        "3. 当用户在你说话时插话，立即停止当前回答，优先听用户新的话。\n"
-        f"4. 如果用户的打断意图是让你停下、暂停、闭嘴、等一下、先别说了，请只做一句很短的确认回复：普通话可用“{ack}”；粤语和英语也要用对应语言表达同样意思。\n"
-        "5. 不要为这类打断重复解释，也不要继续之前那段回答。\n"
+        "3. 一旦当前轮次的目标回复语言已经确定，你整段回复都必须只使用该语言，不要混用，不要因为用户说得短、含糊、重复或夹杂语气词就默认切回中文。\n"
+        "4. 如果目标语言是英语，就只用自然英语完整回答；如果目标语言是粤语，就只用自然粤语完整回答；如果目标语言是普通话，就只用普通话完整回答。\n"
+        "5. 当用户在你说话时插话，立即停止当前回答，优先听用户新的话。\n"
+        f"6. 如果用户的打断意图是让你停下、暂停、闭嘴、等一下、先别说了，请只做一句很短的确认回复：普通话可用“{ack}”；粤语和英语也要用对应语言表达同样意思。\n"
+        "7. 不要为这类打断重复解释，也不要继续之前那段回答。\n"
     )
     tool_extra = ""
     if G1_ADAPTER.available:
@@ -1684,6 +1706,7 @@ def _build_session() -> AgentSession:
 def _mirror_assistant_text_to_om1(text: str) -> None:
     SPEECH_FEEDBACK.speak_assistant_reply(
         text,
+        language=_preferred_reply_language(),
         normalize_tts_text=_normalize_tts_text,
     )
 
@@ -1691,6 +1714,7 @@ def _mirror_assistant_text_to_om1(text: str) -> None:
 def _mirror_assistant_text_to_om1_async(text: str) -> None:
     SPEECH_FEEDBACK.speak_assistant_reply_async(
         text,
+        language=_preferred_reply_language(),
         normalize_tts_text=_normalize_tts_text,
     )
 
@@ -1898,6 +1922,7 @@ def _wire_debug_events(session: AgentSession) -> None:
             return
         if role != "assistant" or interrupted or not text:
             return
+        _log_assistant_language_alignment(text)
         _mirror_once(text)
 
     @session.on("speech_created")
