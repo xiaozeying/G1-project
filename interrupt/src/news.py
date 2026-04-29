@@ -36,7 +36,13 @@ def _clean_title(title: str) -> str:
     return cleaned
 
 
-def query_news(topic: str = "", *, limit: int = 3, timeout: float = 8.0) -> NewsResult:
+def query_news(
+    topic: str = "",
+    *,
+    limit: int = 3,
+    timeout: float = 8.0,
+    language: str = "zh-CN",
+) -> NewsResult:
     normalized_topic = " ".join((topic or "").split()).strip()
     url = RSS_SEARCH.format(query=quote_plus(normalized_topic)) if normalized_topic else RSS_TOP_HEADLINES
     request = Request(
@@ -76,8 +82,23 @@ def query_news(topic: str = "", *, limit: int = 3, timeout: float = 8.0) -> News
     if not titles:
         return NewsResult(ok=False, summary="", error="no headlines")
     if normalized_topic:
-        prefix = f"{normalized_topic}相关最新新闻"
+        if language == "en":
+            prefix = f"Latest news about {normalized_topic}"
+        elif language == "zh-YUE":
+            prefix = f"{normalized_topic}相關最新新聞"
+        else:
+            prefix = f"{normalized_topic}相关最新新闻"
     else:
-        prefix = "今天的热点新闻"
-    summary = prefix + "：" + "；".join(f"{idx}. {title}" for idx, title in enumerate(titles, start=1)) + "。"
+        if language == "en":
+            prefix = "Today's top headlines"
+        elif language == "zh-YUE":
+            prefix = "今日熱點新聞"
+        else:
+            prefix = "今天的热点新闻"
+    if language == "en":
+        items = "; ".join(f"{idx}. {title}" for idx, title in enumerate(titles, start=1))
+        summary = prefix + ": " + items + "."
+    else:
+        items = "；".join(f"{idx}. {title}" for idx, title in enumerate(titles, start=1))
+        summary = prefix + "：" + items + "。"
     return NewsResult(ok=True, summary=summary)

@@ -68,7 +68,10 @@ class G1Om1Adapter:
     @property
     def available(self) -> bool:
         checks = self.validate_paths()
-        return all(checks.values())
+        return all(
+            checks[key]
+            for key in ("python_executable", "direct_command_script", "feedback_script")
+        )
 
     def execute_direct_text(self, text: str, *, check: bool = False) -> G1Om1CommandResult:
         if self._looks_like_led_command(text):

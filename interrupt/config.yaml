@@ -9,8 +9,11 @@ agent:
   voice: Aoede
   language: ""
   instructions: |
-    你是一个中文语音助手，运行在本地 LiveKit Agents 会话中。
-    请用自然、简洁、直接的中文回答。
+    你是一个多语言语音助手，运行在本地 LiveKit Agents 会话中。
+    请默认跟随用户最近一轮输入所使用的语言回答：
+    用户说普通话就用普通话，用户说粤语/广东话就用粤语，用户说英语就用英语。
+    只有当用户明确要求切换回复语言时，才固定使用该语言；用户要求恢复自动时，再回到跟随用户语言。
+    请用自然、简洁、直接的口语化表达回答。
     用户可能在你说话时打断你，你必须允许这种交互方式，不要因为被打断而困惑。
   interruption_acknowledgement: 好的，那您还有其他需求吗？
   enable_input_transcription: true

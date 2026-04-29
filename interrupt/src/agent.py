@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import urllib.request
@@ -28,7 +29,31 @@ from src.weather import query_weather
 
 
 LOGGER = logging.getLogger("interrupt.agent")
-apply_console_audio_compat_patch()
+
+
+def _should_apply_console_audio_patch(argv: list[str] | None = None) -> bool:
+    args = list(argv if argv is not None else sys.argv[1:])
+    if os.getenv("INTERRUPT_DISABLE_CONSOLE_AUDIO_COMPAT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    if "--help" in args or "--show-completion" in args or "--install-completion" in args:
+        return False
+    if "console" not in args:
+        return False
+    if "--text" in args:
+        return False
+    if os.getenv("INTERRUPT_TEXT_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
+    return True
+
+
+if _should_apply_console_audio_patch():
+    apply_console_audio_compat_patch()
+
 SETTINGS = load_settings()
 G1_ADAPTER = G1Om1Adapter()
 SPEECH_FEEDBACK = SpeechFeedbackRouter(SETTINGS.feedback, G1_ADAPTER)
@@ -346,12 +371,144 @@ def _looks_like_english_text(text: str) -> bool:
     return ascii_letters >= 4 and ascii_letters >= cjk_chars * 2
 
 
+def _extract_explicit_language_tag(text: str) -> str | None:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    tag_aliases = {
+        "<|zh|>": REPLY_LANGUAGE_MANDARIN,
+        "<|cmn|>": REPLY_LANGUAGE_MANDARIN,
+        "<|zh-cn|>": REPLY_LANGUAGE_MANDARIN,
+        "<|yue|>": REPLY_LANGUAGE_CANTONESE,
+        "<|zh-yue|>": REPLY_LANGUAGE_CANTONESE,
+        "<|en|>": REPLY_LANGUAGE_ENGLISH,
+        "<|en-us|>": REPLY_LANGUAGE_ENGLISH,
+        "<|en-gb|>": REPLY_LANGUAGE_ENGLISH,
+    }
+    for tag, language in tag_aliases.items():
+        if tag in lowered:
+            return language
+    return None
+
+
 def _detect_reply_language(text: str) -> str:
+    tagged = _extract_explicit_language_tag(text)
+    if tagged:
+        return tagged
+    if _contains_cantonese_markers(text):
+        return REPLY_LANGUAGE_CANTONESE
+    if _looks_like_english_text(text):
+        return REPLY_LANGUAGE_ENGLISH
+    normalized = _normalize_assistant_text(text)
+    if any("\u3400" <= ch <= "\u9fff" for ch in normalized):
+        return REPLY_LANGUAGE_MANDARIN
     return REPLY_LANGUAGE_MANDARIN
 
 
 def _detect_forced_reply_language(text: str) -> str | None:
+    normalized = _normalize_assistant_text(text)
+    lowered = normalized.lower()
+    compact = lowered.replace(" ", "")
+    if not normalized:
+        return None
+
+    def _matches_any(phrases: tuple[str, ...]) -> bool:
+        for phrase in phrases:
+            lowered_phrase = phrase.lower()
+            if lowered_phrase in lowered:
+                return True
+            if " " in lowered_phrase and lowered_phrase.replace(" ", "") in compact:
+                return True
+        return False
+
+    auto_phrases = (
+        "自动切换语言",
+        "自适应语言",
+        "自动识别语言",
+        "跟着我说的话回答",
+        "按我说的语言回答",
+        "恢复自动",
+        "切回自动",
+        "auto reply",
+        "auto language",
+        "use my language",
+        "follow my language",
+        "reply in my language",
+    )
+    if _matches_any(auto_phrases):
+        return ""
+
+    cantonese_phrases = (
+        "用粤语回答",
+        "用廣東話回答",
+        "用广东话回答",
+        "讲粤语",
+        "講粵語",
+        "讲广东话",
+        "講廣東話",
+        "用白话回答",
+        "用廣東話覆",
+        "reply in cantonese",
+        "answer in cantonese",
+        "speak cantonese",
+    )
+    if _matches_any(cantonese_phrases):
+        return REPLY_LANGUAGE_CANTONESE
+
+    english_phrases = (
+        "用英语回答",
+        "用英文回答",
+        "讲英语",
+        "講英語",
+        "说英语",
+        "說英語",
+        "英文回答",
+        "英语回答",
+        "reply in english",
+        "answer in english",
+        "speak english",
+        "english please",
+    )
+    if _matches_any(english_phrases):
+        return REPLY_LANGUAGE_ENGLISH
+
+    mandarin_phrases = (
+        "用普通话回答",
+        "用普通話回答",
+        "用中文回答",
+        "讲普通话",
+        "講普通話",
+        "说普通话",
+        "說普通話",
+        "讲中文",
+        "講中文",
+        "说中文",
+        "說中文",
+        "reply in chinese",
+        "answer in chinese",
+        "speak chinese",
+        "mandarin please",
+    )
+    if _matches_any(mandarin_phrases):
+        return REPLY_LANGUAGE_MANDARIN
     return None
+
+
+def _localized_text(
+    mandarin: str,
+    cantonese: str | None = None,
+    english: str | None = None,
+    *,
+    language: str | None = None,
+) -> str:
+    target = language or _preferred_reply_language()
+    localized = {
+        REPLY_LANGUAGE_MANDARIN: mandarin,
+        REPLY_LANGUAGE_CANTONESE: cantonese or mandarin,
+        REPLY_LANGUAGE_ENGLISH: english or mandarin,
+    }
+    return localized.get(target, mandarin)
 
 
 def _remember_reply_language_preference(text: str) -> None:
@@ -1319,19 +1476,35 @@ class InterruptAssistant(Agent):
                 location,
                 latest_text,
             )
-            return "刚才没有听到明确的天气请求，我先不查询天气。"
+            return _localized_text(
+                "刚才没有听到明确的天气请求，我先不查询天气。",
+                "啱啱未聽到明確嘅天氣要求，我而家先唔查天氣。",
+                "I didn't hear a clear weather request just now, so I won't check the weather yet.",
+            )
         try:
-            result = await asyncio.to_thread(query_weather, location)
+            result = await asyncio.to_thread(
+                query_weather,
+                location,
+                language=_preferred_reply_language(),
+            )
         except (URLError, OSError) as exc:
             LOGGER.warning("local weather query failed: location=%r error=%s", location, exc)
-            return "抱歉，当前天气查询暂时不可用。"
+            return _localized_text(
+                "抱歉，当前天气查询暂时不可用。",
+                "唔好意思，而家天氣查詢暫時用唔到。",
+                "Sorry, the weather service is temporarily unavailable right now.",
+            )
         if not result.ok:
             LOGGER.warning(
                 "local weather query failed: location=%r error=%s",
                 location,
                 result.error,
             )
-            return "抱歉，当前天气查询暂时不可用。"
+            return _localized_text(
+                "抱歉，当前天气查询暂时不可用。",
+                "唔好意思，而家天氣查詢暫時用唔到。",
+                "Sorry, the weather service is temporarily unavailable right now.",
+            )
         LOGGER.info("local weather query succeeded: location=%r summary=%r", location, result.summary)
         return result.summary
 
@@ -1353,30 +1526,50 @@ class InterruptAssistant(Agent):
                 topic,
                 latest_text,
             )
-            return "刚才没有听到明确的新闻请求，我先不查询新闻。"
+            return _localized_text(
+                "刚才没有听到明确的新闻请求，我先不查询新闻。",
+                "啱啱未聽到明確嘅新聞要求，我而家先唔查新聞。",
+                "I didn't hear a clear news request just now, so I won't check the news yet.",
+            )
         try:
-            result = await asyncio.to_thread(query_news, topic)
+            result = await asyncio.to_thread(
+                query_news,
+                topic,
+                language=_preferred_reply_language(),
+            )
         except (URLError, OSError) as exc:
             LOGGER.warning("news query failed: topic=%r error=%s", topic, exc)
-            return "抱歉，当前新闻查询暂时不可用。"
+            return _localized_text(
+                "抱歉，当前新闻查询暂时不可用。",
+                "唔好意思，而家新聞查詢暫時用唔到。",
+                "Sorry, the news service is temporarily unavailable right now.",
+            )
         except Exception as exc:
             LOGGER.warning("news query failed: topic=%r error=%s", topic, exc)
-            return "抱歉，当前新闻查询暂时不可用。"
+            return _localized_text(
+                "抱歉，当前新闻查询暂时不可用。",
+                "唔好意思，而家新聞查詢暫時用唔到。",
+                "Sorry, the news service is temporarily unavailable right now.",
+            )
         if not result.ok:
             LOGGER.warning("news query failed: topic=%r error=%s", topic, result.error)
-            return "抱歉，当前新闻查询暂时不可用。"
+            return _localized_text(
+                "抱歉，当前新闻查询暂时不可用。",
+                "唔好意思，而家新聞查詢暫時用唔到。",
+                "Sorry, the news service is temporarily unavailable right now.",
+            )
         LOGGER.info("news query succeeded: topic=%r summary=%r", topic, result.summary)
         return result.summary
-
 
 def _effective_instructions() -> str:
     ack = SETTINGS.agent.interruption_acknowledgement.strip()
     extra = (
-        "\n\n打断交互规则：\n"
-        "1. 当用户在你说话时插话，立即停止当前回答，优先听用户新的话。\n"
-        "2. 如果用户的打断意图是让你停下、暂停、闭嘴、等一下、先别说了，"
-        f"请只用一句简短中文回复：{ack}\n"
-        "3. 不要为这类打断重复解释，也不要继续之前那段回答。\n"
+        "\n\n语言与打断交互规则：\n"
+        "1. 默认跟随用户最近一轮输入所使用的语言回答；用户说普通话就用普通话，用户说粤语/广东话就用粤语，用户说英语就用英语。\n"
+        "2. 只有当用户明确要求切换回复语言时，才暂时固定使用该语言；当用户要求恢复自动或按他说的语言回答时，恢复自动跟随。\n"
+        "3. 当用户在你说话时插话，立即停止当前回答，优先听用户新的话。\n"
+        f"4. 如果用户的打断意图是让你停下、暂停、闭嘴、等一下、先别说了，请只做一句很短的确认回复：普通话可用“{ack}”；粤语和英语也要用对应语言表达同样意思。\n"
+        "5. 不要为这类打断重复解释，也不要继续之前那段回答。\n"
     )
     tool_extra = ""
     if G1_ADAPTER.available:
@@ -1387,7 +1580,7 @@ def _effective_instructions() -> str:
             "3. 如果用户命令不够标准，但仍明显是在控制灯或上身动作，可使用 execute_robot_command_text。\n"
             "4. 用户询问天气时，优先调用 get_weather 获取实时天气，不要假装已经联网成功。\n"
             "5. 用户询问新闻、热点新闻、科技新闻等时，优先调用 get_news 获取最新新闻，不要直接说拿不到。\n"
-            "6. 工具执行成功后，用一句简短中文告知用户已经开始执行或已经完成。\n"
+            "6. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
         )
     return SETTINGS.agent.instructions.rstrip() + extra + tool_extra
 
