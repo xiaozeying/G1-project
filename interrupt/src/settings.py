@@ -61,6 +61,20 @@ class FeedbackConfig:
 
 
 @dataclass
+class VisionConfig:
+    enabled: bool
+    model: str
+    base_url: str
+    preferred_device: str
+    width: int
+    height: int
+    jpeg_quality: int
+    max_tokens: int
+    capture_warmup_frames: int
+    capture_timeout_s: float
+
+
+@dataclass
 class ConsoleConfig:
     input_device: str
     output_device: str
@@ -97,6 +111,7 @@ class AppSettings:
     agent: AgentConfig
     web: WebConfig
     feedback: FeedbackConfig
+    vision: VisionConfig
     console: ConsoleConfig
     rtc_endpoint: RtcEndpointConfig
     integrations: IntegrationConfig
@@ -266,6 +281,79 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
                 default="om1_mirror",
             ),
             local_tool_ack_audio_mode=local_tool_ack_audio_mode,
+        ),
+        vision=VisionConfig(
+            enabled=os.getenv(
+                "INTERRUPT_VLM_ENABLED",
+                str(raw.get("vision", {}).get("enabled", False)),
+            )
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            model=os.getenv(
+                "GEMINI_VLM_MODEL",
+                os.getenv(
+                    "INTERRUPT_VLM_MODEL",
+                    raw.get("vision", {}).get("model", "gemini-2.5-flash"),
+                ),
+            ).strip()
+            or "gemini-2.5-flash",
+            base_url=os.getenv(
+                "GEMINI_BASE_URL",
+                os.getenv(
+                    "INTERRUPT_VLM_BASE_URL",
+                    raw.get(
+                        "vision", {}
+                    ).get(
+                        "base_url",
+                        "https://generativelanguage.googleapis.com/v1beta/openai/",
+                    ),
+                ),
+            ).strip()
+            or "https://generativelanguage.googleapis.com/v1beta/openai/",
+            preferred_device=os.getenv(
+                "UNITREE_G1_CAMERA_DEVICE",
+                os.getenv(
+                    "INTERRUPT_VLM_CAMERA_DEVICE",
+                    raw.get("vision", {}).get("preferred_device", ""),
+                ),
+            ).strip(),
+            width=int(
+                os.getenv(
+                    "INTERRUPT_VLM_WIDTH",
+                    str(raw.get("vision", {}).get("width", 640)),
+                )
+            ),
+            height=int(
+                os.getenv(
+                    "INTERRUPT_VLM_HEIGHT",
+                    str(raw.get("vision", {}).get("height", 480)),
+                )
+            ),
+            jpeg_quality=int(
+                os.getenv(
+                    "INTERRUPT_VLM_JPEG_QUALITY",
+                    str(raw.get("vision", {}).get("jpeg_quality", 75)),
+                )
+            ),
+            max_tokens=int(
+                os.getenv(
+                    "INTERRUPT_VLM_MAX_TOKENS",
+                    str(raw.get("vision", {}).get("max_tokens", 240)),
+                )
+            ),
+            capture_warmup_frames=int(
+                os.getenv(
+                    "INTERRUPT_VLM_CAPTURE_WARMUP_FRAMES",
+                    str(raw.get("vision", {}).get("capture_warmup_frames", 3)),
+                )
+            ),
+            capture_timeout_s=float(
+                os.getenv(
+                    "INTERRUPT_VLM_CAPTURE_TIMEOUT_S",
+                    str(raw.get("vision", {}).get("capture_timeout_s", 3.0)),
+                )
+            ),
         ),
         console=ConsoleConfig(
             input_device=os.getenv("INTERRUPT_INPUT_DEVICE", console.get("input_device", "")).strip(),

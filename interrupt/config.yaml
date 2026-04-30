@@ -63,5 +63,17 @@ feedback:
   assistant_audio_mode: om1_mirror
   local_tool_ack_audio_mode: om1_mirror
 
+vision:
+  enabled: false
+  model: gemini-2.5-flash
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  preferred_device: ""
+  width: 640
+  height: 480
+  jpeg_quality: 75
+  max_tokens: 240
+  capture_warmup_frames: 3
+  capture_timeout_s: 3.0
+
 logging:
   level: INFO

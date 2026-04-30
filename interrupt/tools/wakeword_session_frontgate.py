@@ -485,7 +485,6 @@ def main() -> int:
                 event = gate.wait_for_wake()
             except RuntimeError as exc:
                 print(f"[FrontGate] wake gate runtime error: {exc}", flush=True)
-                _set_idle_led_on_start(adapter)
                 gate.close()
                 gate = None
                 time.sleep(max(0.1, retry_delay_s))

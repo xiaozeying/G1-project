@@ -63,6 +63,11 @@ def check_env_var() -> None:
     print(f"  LIVEKIT_API_KEY -> {'SET' if os.getenv('LIVEKIT_API_KEY') else 'MISSING'}")
     print(f"  LIVEKIT_API_SECRET -> {'SET' if os.getenv('LIVEKIT_API_SECRET') else 'MISSING'}")
     print(f"  GEMINI_API_KEY -> {'SET' if os.getenv('GEMINI_API_KEY') else 'MISSING'}")
+    print(f"  INTERRUPT_VLM_ENABLED -> {os.getenv('INTERRUPT_VLM_ENABLED', '0') or '0'}")
+    print(
+        "  UNITREE_G1_CAMERA_DEVICE -> "
+        f"{os.getenv('UNITREE_G1_CAMERA_DEVICE') or 'EMPTY'}"
+    )
     print(
         "  INTERRUPT_WAKE_WORD_FACTORY -> "
         f"{'SET' if os.getenv('INTERRUPT_WAKE_WORD_FACTORY') else 'EMPTY'}"

@@ -203,6 +203,44 @@ INTERRUPT_CANTONESE_TTS_MUTE_REMOTE_AUDIO=1
 当前实现只把 `zh-YUE` 本地播报单独路由到微软 `edge-tts` 粤语音色；
 普通话和英语仍保持原有播报链路。
 
+如果要开始试当前主链里的单帧 VLM 视觉聊天，可额外配置：
+
+```bash
+INTERRUPT_VLM_ENABLED=1
+# 可选：优先指定机器人 RGB 相机，例如 /dev/video2 或 video2
+UNITREE_G1_CAMERA_DEVICE=
+# 可选：默认沿用 GEMINI_API_KEY
+GEMINI_VLM_MODEL=gemini-2.5-flash
+INTERRUPT_VLM_WIDTH=640
+INTERRUPT_VLM_HEIGHT=480
+INTERRUPT_VLM_JPEG_QUALITY=75
+INTERRUPT_VLM_MAX_TOKENS=240
+INTERRUPT_VLM_CAPTURE_TIMEOUT_S=3.0
+```
+
+启用后，用户可以直接在当前语音会话里问：
+
+- `你前面有什么`
+- `帮我看看桌上有什么`
+- `你看到有人吗`
+- `What do you see in front of you?`
+
+当前这版视觉能力是“按需抓一帧再回答”，不会改掉现有唤醒、三语、中断、动作/LED、超时退出主路径；如果视觉未开启、相机不可用或画面不清，assistant 会明确说明，而不是假装看到了内容。
+
+如果想先不跑整条语音链，单独测“相机抓帧 + Gemini VLM”是否通，可直接运行：
+
+```bash
+cd /home/zz/HongTu/interrupt
+source .venv/bin/activate
+python tools/vlm_smoke_test.py "你前面有什么"
+```
+
+也可以指定回复语言：
+
+```bash
+python tools/vlm_smoke_test.py "What do you see in front of you?" --language en
+```
+
 列出可用音频设备：
 
 ```bash

@@ -25,6 +25,7 @@ from src.integrations import build_mcp_servers, log_integration_summary
 from src.news import query_news
 from src.speech_feedback import SpeechFeedbackRouter
 from src.settings import load_settings
+from src.vision_chat import VisionChatConfig, ask_camera_question
 from src.weather import query_weather
 
 
@@ -57,6 +58,19 @@ if _should_apply_console_audio_patch():
 SETTINGS = load_settings()
 G1_ADAPTER = G1Om1Adapter()
 SPEECH_FEEDBACK = SpeechFeedbackRouter(SETTINGS.feedback, G1_ADAPTER)
+VISION_CHAT_CONFIG = VisionChatConfig(
+    enabled=SETTINGS.vision.enabled,
+    api_key=SETTINGS.gemini_api_key,
+    base_url=SETTINGS.vision.base_url,
+    model=SETTINGS.vision.model,
+    preferred_device=SETTINGS.vision.preferred_device,
+    width=SETTINGS.vision.width,
+    height=SETTINGS.vision.height,
+    jpeg_quality=SETTINGS.vision.jpeg_quality,
+    max_tokens=SETTINGS.vision.max_tokens,
+    capture_warmup_frames=SETTINGS.vision.capture_warmup_frames,
+    capture_timeout_s=SETTINGS.vision.capture_timeout_s,
+)
 REALTIME_PREFIX_PADDING_MS = int(
     os.getenv("INTERRUPT_REALTIME_PREFIX_PADDING_MS", "500").strip() or "500"
 )
@@ -937,6 +951,12 @@ def _query_ack_text(text: str) -> str | None:
         if language == REPLY_LANGUAGE_ENGLISH:
             return "Okay, I'll give you the news."
         return "好的，我来播报新闻。"
+    if _looks_like_vision_query(normalized):
+        if language == REPLY_LANGUAGE_CANTONESE:
+            return "好啊，我而家幫你睇下前面。"
+        if language == REPLY_LANGUAGE_ENGLISH:
+            return "Okay, I'll take a quick look."
+        return "好的，我来帮你看看前面。"
     if any(
         token in normalized
         for token in (
@@ -969,6 +989,176 @@ def _looks_like_news_query(text: str) -> bool:
     return any(token in normalized for token in ("新闻", "新聞", "news", "热点", "熱點", "时事", "時事"))
 
 
+def _vision_failure_text(error: str, *, device: str = "") -> str:
+    language = _preferred_reply_language()
+    if error == "vision_disabled":
+        return _localized_text(
+            "我当前还没有开启视觉模式，所以现在看不到前面的画面。",
+            "我而家未開啟視覺模式，所以暫時睇唔到前面畫面。",
+            "Vision mode is not enabled right now, so I can't see the camera view yet.",
+        )
+    if error == "missing_api_key":
+        return _localized_text(
+            "视觉功能还没配置好 Gemini API key，所以现在暂时不能看图。",
+            "視覺功能未配置好 Gemini API key，所以而家暫時未能睇圖。",
+            "The vision feature is missing the Gemini API key, so it can't inspect images yet.",
+        )
+    if error == "opencv_unavailable":
+        return _localized_text(
+            "当前环境缺少相机依赖，所以我暂时没法调用视觉功能。",
+            "而家環境缺少相機依賴，所以我暫時未能調用視覺功能。",
+            "The current environment is missing camera dependencies, so vision is unavailable right now.",
+        )
+    if error == "camera_not_found":
+        return _localized_text(
+            "我暂时没有找到可用的前置相机设备。",
+            "我暫時未搵到可用嘅前置相機設備。",
+            "I couldn't find an available front camera device right now.",
+        )
+    if error == "capture_failed":
+        if device:
+            return _localized_text(
+                f"我找到相机了，但暂时没能从 {device} 抓到画面。",
+                f"我搵到相機，但暫時未能由 {device} 擷取畫面。",
+                f"I found the camera, but I couldn't capture a frame from {device} yet.",
+            )
+        return _localized_text(
+            "我找到相机了，但暂时没能抓到画面。",
+            "我搵到相機，但暫時未能擷取畫面。",
+            "I found the camera, but I couldn't capture a frame yet.",
+        )
+    if error == "http_429":
+        return _localized_text(
+            "我已经拍到画面了，但视觉服务现在有点忙，请你稍后再让我看一次。",
+            "我已經影到畫面，但視覺服務而家有啲忙，遲啲再叫我睇一次啦。",
+            "I captured the frame, but the vision service is busy right now. Please ask me again in a moment.",
+        )
+    if error == "http_503":
+        return _localized_text(
+            "我已经拍到画面了，但视觉服务现在比较繁忙，请稍后再问我一次。",
+            "我已經影到畫面，但視覺服務而家比較繁忙，等陣再問我一次啦。",
+            "I captured the frame, but the vision service is under heavy load right now. Please try again in a moment.",
+        )
+    if error.startswith("http_"):
+        return _localized_text(
+            "我已经拍到画面了，但视觉请求服务暂时失败了。",
+            "我已經影到畫面，但視覺請求服務暫時失敗。",
+            "I captured a frame, but the vision request to the service failed.",
+        )
+    return _localized_text(
+        "抱歉，我这次没有成功看清前面的画面，你可以再让我看一次。",
+        "唔好意思，我今次未成功睇清前面畫面，你可以再叫我睇一次。",
+        "Sorry, I couldn't get a clear camera view that time. Please ask me to look again.",
+    )
+
+
+def _looks_like_vision_query(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(
+        token in normalized
+        for token in (
+            "你前面有什么",
+            "你前面有什麼",
+            "你前面有什么东西",
+            "你前面有什麼東西",
+            "你前面有咩",
+            "你面前有什么",
+            "你面前有什麼",
+            "你面前有什么东西",
+            "你面前有什麼東西",
+            "你面前是什么",
+            "你面前是什麼",
+            "你面前是什么东西",
+            "你面前是什麼東西",
+            "你面前有咩",
+            "现在面前有什么",
+            "現在面前有什麼",
+            "现在面前有什么东西",
+            "現在面前有什麼東西",
+            "现在面前是什么",
+            "現在面前是什麼",
+            "现在面前是什么东西",
+            "現在面前是什麼東西",
+            "现在前面有什么",
+            "現在前面有什麼",
+            "現在前面有什麼東西",
+            "现在前面是什么",
+            "現在前面是什麼",
+            "现在前面是什么东西",
+            "現在前面是什麼東西",
+            "那你现在面前有什么",
+            "那你現在面前有什麼",
+            "那你現在面前有什麼東西",
+            "那你现在面前是什么",
+            "那你現在面前是什麼",
+            "那你現在面前是什麼東西",
+            "帮我看看",
+            "幫我睇下",
+            "幫我看看",
+            "睇下",
+            "看一下",
+            "看一看",
+            "看看前面",
+            "看到什么",
+            "看到什麼",
+            "看到什么东西",
+            "看到什麼東西",
+            "睇到咩",
+            "你看到什么",
+            "你看到什麼",
+            "你睇到咩",
+            "你见到什么",
+            "你見到什麼",
+            "你見到咩",
+            "前面是什么",
+            "前面是什麼",
+            "前面是什么东西",
+            "前面是什麼東西",
+            "前面有谁",
+            "前面有誰",
+            "前面有人吗",
+            "前面有人嗎",
+            "桌上有什么",
+            "桌上有什麼",
+            "画面里有什么",
+            "畫面里有什麼",
+            "畫面入面有咩",
+            "what do you see",
+            "can you see",
+            "look in front",
+            "look at the camera",
+            "what is in front of you",
+            "who do you see",
+            "what's on the table",
+        )
+    ):
+        return True
+    compact_ascii = re.sub(r"[^a-z0-9]+", "", normalized)
+    if not compact_ascii:
+        return False
+    return any(
+        token in compact_ascii
+        for token in (
+            "whatdoyousee",
+            "canyousee",
+            "lookinfront",
+            "lookatthecamera",
+            "whatisinfrontofyou",
+            "whodoyousee",
+            "whatisonthetable",
+            "whatsonthetable",
+        )
+    )
+
+
+def _is_vision_query_valid(question: str) -> bool:
+    if _looks_like_vision_query(question):
+        return True
+    return _is_recent_query_intent_valid("vision")
+
+
 def _is_recent_query_intent_valid(kind: str) -> bool:
     latest_text, latest_at = _latest_user_text()
     now = time.monotonic()
@@ -978,6 +1168,8 @@ def _is_recent_query_intent_valid(kind: str) -> bool:
         return _looks_like_weather_query(latest_text)
     if kind == "news":
         return _looks_like_news_query(latest_text)
+    if kind == "vision":
+        return _looks_like_vision_query(latest_text)
     return False
 
 
@@ -1581,6 +1773,56 @@ class InterruptAssistant(Agent):
         LOGGER.info("news query succeeded: topic=%r summary=%r", topic, result.summary)
         return result.summary
 
+    @function_tool(
+        name="ask_camera_vision",
+        description=(
+            "Look at the robot's current front camera view and answer a visual question "
+            "about what is directly visible right now."
+        ),
+    )
+    async def ask_camera_vision(self, question: str = "") -> str:
+        """
+        Ask a visual question using the current front camera snapshot.
+
+        Args:
+            question: Visual question such as 你前面有什么, 你看到谁, 桌上有什么.
+        """
+        if not SETTINGS.vision.enabled:
+            return _vision_failure_text("vision_disabled")
+        if not _is_vision_query_valid(question):
+            latest_text, _ = _latest_user_text()
+            LOGGER.warning(
+                "reject vision tool execution due to mismatched vision intent: question=%r latest_user_text=%r",
+                question,
+                latest_text,
+            )
+            return _localized_text(
+                "刚才我没有听到明确的视觉问题，所以先不看相机画面。",
+                "啱啱我未聽到明確要我睇畫面，所以而家先唔開相機。",
+                "I didn't hear a clear visual question just now, so I won't inspect the camera yet.",
+            )
+        result = await asyncio.to_thread(
+            ask_camera_question,
+            VISION_CHAT_CONFIG,
+            question=question,
+            reply_language=_preferred_reply_language(),
+        )
+        if not result.ok:
+            LOGGER.warning(
+                "camera vision query failed: question=%r error=%s device=%s",
+                question,
+                result.error,
+                result.camera_device,
+            )
+            return _vision_failure_text(result.error, device=result.camera_device)
+        LOGGER.info(
+            "camera vision query succeeded: question=%r device=%s answer=%r",
+            question,
+            result.camera_device,
+            result.answer,
+        )
+        return result.answer
+
 def _effective_instructions() -> str:
     ack = SETTINGS.agent.interruption_acknowledgement.strip()
     extra = (
@@ -1602,7 +1844,9 @@ def _effective_instructions() -> str:
             "3. 如果用户命令不够标准，但仍明显是在控制灯或上身动作，可使用 execute_robot_command_text。\n"
             "4. 用户询问天气时，优先调用 get_weather 获取实时天气，不要假装已经联网成功。\n"
             "5. 用户询问新闻、热点新闻、科技新闻等时，优先调用 get_news 获取最新新闻，不要直接说拿不到。\n"
-            "6. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
+            "6. 当用户明确询问你看到了什么、前面有什么、某个物体/人是否在画面里、帮他看看眼前场景时，优先调用 ask_camera_vision。\n"
+            "7. 视觉工具只回答画面中能直接看到的内容；如果当前没有视觉能力或画面不清楚，要诚实说明。\n"
+            "8. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
         )
     return SETTINGS.agent.instructions.rstrip() + extra + tool_extra
 

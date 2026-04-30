@@ -235,6 +235,7 @@ class Om1WakeWordGate(WakeWordGate):
         self._release_remaining = 0
         self._missing_asr_logged = False
         self._recent_texts: list[str] = []
+        self._consecutive_capture_errors = 0
 
     def wait_for_wake(self) -> WakeWordEvent | None:
         if self._closed:
@@ -245,73 +246,94 @@ class Om1WakeWordGate(WakeWordGate):
         chunk_samples = int(self.system.TARGET_SAMPLE_RATE * self.chunk_duration)
         frame_bytes = chunk_samples * 2
         read_timeout_s = float(
-            os.environ.get("OM1_WAKEWORD_READ_TIMEOUT_S", "4.0").strip() or "4.0"
+            os.environ.get("OM1_WAKEWORD_READ_TIMEOUT_S", "12.0").strip() or "12.0"
+        )
+        reopen_delay_s = float(
+            os.environ.get("OM1_WAKEWORD_REOPEN_DELAY_S", "0.20").strip() or "0.20"
+        )
+        max_consecutive_errors = int(
+            os.environ.get("OM1_WAKEWORD_MAX_CONSECUTIVE_ERRORS", "20").strip() or "20"
         )
 
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                [
-                    "arecord",
-                    "-q",
-                    "-D",
-                    self.capture_device,
-                    "-f",
-                    "S16_LE",
-                    "-r",
-                    str(self.system.TARGET_SAMPLE_RATE),
-                    "-c",
-                    "1",
-                    "-t",
-                    "raw",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-            )
-            assert proc.stdout is not None
-            stdout_fd = proc.stdout.fileno()
-            buffered = bytearray()
-            while not self._closed:
-                ready, _, _ = select.select([stdout_fd], [], [], max(0.5, read_timeout_s))
-                if not ready:
-                    raise RuntimeError(f"arecord stalled for {read_timeout_s:.1f}s")
-                chunk = os.read(stdout_fd, min(16384, max(4096, frame_bytes - len(buffered))))
-                if not chunk:
-                    err = ""
-                    if proc.stderr is not None:
-                        try:
-                            err = proc.stderr.read().decode("utf-8", errors="ignore").strip()
-                        except Exception:
-                            err = ""
-                    raise RuntimeError(err or "arecord stopped producing audio")
-                buffered.extend(chunk)
-                while len(buffered) >= frame_bytes:
-                    frame = bytes(buffered[:frame_bytes])
-                    del buffered[:frame_bytes]
-                    audio_chunk = np.frombuffer(frame, dtype=np.int16).copy()
-                    audio_chunk = _apply_software_gain(audio_chunk, self.software_gain)
-                    now = time.monotonic()
-                    rms, peak = _audio_levels(audio_chunk)
-                    if (
-                        self.level_interval > 0
-                        and now - self._last_level_log_at >= self.level_interval
-                    ):
-                        print(f"[FrontGate] audio_level rms={rms} peak={peak}", flush=True)
-                        self._last_level_log_at = now
-                    if not self._should_process(rms, peak):
-                        continue
-                    event = self._process_chunk(audio_chunk)
-                    if event is not None:
-                        return event
-            return None
-        finally:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1)
-                except Exception:
-                    proc.kill()
+        while not self._closed:
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    [
+                        "arecord",
+                        "-q",
+                        "-D",
+                        self.capture_device,
+                        "-f",
+                        "S16_LE",
+                        "-r",
+                        str(self.system.TARGET_SAMPLE_RATE),
+                        "-c",
+                        "1",
+                        "-t",
+                        "raw",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=0,
+                )
+                assert proc.stdout is not None
+                stdout_fd = proc.stdout.fileno()
+                buffered = bytearray()
+                self._consecutive_capture_errors = 0
+                while not self._closed:
+                    ready, _, _ = select.select([stdout_fd], [], [], max(0.5, read_timeout_s))
+                    if not ready:
+                        raise RuntimeError(f"arecord stalled for {read_timeout_s:.1f}s")
+                    chunk = os.read(stdout_fd, min(16384, max(4096, frame_bytes - len(buffered))))
+                    if not chunk:
+                        err = ""
+                        if proc.stderr is not None:
+                            try:
+                                err = proc.stderr.read().decode("utf-8", errors="ignore").strip()
+                            except Exception:
+                                err = ""
+                        raise RuntimeError(err or "arecord stopped producing audio")
+                    buffered.extend(chunk)
+                    while len(buffered) >= frame_bytes:
+                        frame = bytes(buffered[:frame_bytes])
+                        del buffered[:frame_bytes]
+                        audio_chunk = np.frombuffer(frame, dtype=np.int16).copy()
+                        audio_chunk = _apply_software_gain(audio_chunk, self.software_gain)
+                        now = time.monotonic()
+                        rms, peak = _audio_levels(audio_chunk)
+                        if (
+                            self.level_interval > 0
+                            and now - self._last_level_log_at >= self.level_interval
+                        ):
+                            print(f"[FrontGate] audio_level rms={rms} peak={peak}", flush=True)
+                            self._last_level_log_at = now
+                        if not self._should_process(rms, peak):
+                            continue
+                        event = self._process_chunk(audio_chunk)
+                        if event is not None:
+                            return event
+            except RuntimeError as exc:
+                self._consecutive_capture_errors += 1
+                print(
+                    "[FrontGate] wake capture auto-recover "
+                    f"attempt={self._consecutive_capture_errors} error={exc}",
+                    flush=True,
+                )
+                if self._consecutive_capture_errors >= max_consecutive_errors:
+                    raise RuntimeError(
+                        f"wake capture failed {self._consecutive_capture_errors} times: {exc}"
+                    ) from exc
+                time.sleep(max(0.05, reopen_delay_s))
+                continue
+            finally:
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        proc.kill()
+        return None
 
     def close(self) -> None:
         self._closed = True
