@@ -35,6 +35,15 @@ def build_parser() -> argparse.ArgumentParser:
     breathe.add_argument("color", help="LED color")
     breathe.add_argument("--period", type=float, default=2.0)
 
+    navigate = subparsers.add_parser("navigate", help="Navigate to a saved location label.")
+    navigate.add_argument("location", help="Saved location label")
+
+    remember = subparsers.add_parser("remember", help="Remember the current pose as a location label.")
+    remember.add_argument("location", help="Location label")
+    remember.add_argument("--description", default="")
+
+    subparsers.add_parser("list-locations", help="List saved navigation locations.")
+
     subparsers.add_parser("paths", help="Show resolved helper paths.")
     subparsers.add_parser("check", help="Check whether helper paths exist.")
     return parser
@@ -56,6 +65,12 @@ def main() -> int:
         result = adapter.set_led(args.color)
     elif args.command == "breathe":
         result = adapter.breathe_led(args.color, period=args.period)
+    elif args.command == "navigate":
+        result = adapter.navigate_to_location(args.location)
+    elif args.command == "remember":
+        result = adapter.remember_location(args.location, description=args.description)
+    elif args.command == "list-locations":
+        result = adapter.list_saved_locations()
     elif args.command == "paths":
         print(json.dumps(adapter.script_paths(), ensure_ascii=False, indent=2))
         return 0

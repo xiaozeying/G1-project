@@ -23,7 +23,7 @@ from src.wakeword_runtime import WakeWordEvent, create_wake_word_gate
 
 
 DEFAULT_FACTORY = "src.mock_wakeword:factory"
-DEFAULT_WAKE_ACK = "我在，请说"
+DEFAULT_WAKE_ACK = "我在，请稍等一下吧"
 DEFAULT_ACTIVE_LED = "green"
 DEFAULT_IDLE_LED = "blue"
 DEFAULT_WAKE_RETRY_DELAY_S = 1.0

@@ -17,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.livekit_room import ensure_room_ready, list_room_participants
+from src.g1_om1_adapter import G1Om1Adapter
 from src.settings import load_environment, load_settings
 
 
@@ -282,8 +283,28 @@ def _agent_identity(identity: str, agent_name: str) -> bool:
     )
 
 
+def _speak_room_ready(adapter: G1Om1Adapter) -> None:
+    if not adapter.available:
+        print("[FrontGateRoom] room_ready_ack skipped: G1/OM1 adapter unavailable", flush=True)
+        return
+    if not _env_flag("INTERRUPT_FRONTGATE_ENABLE_ROOM_READY_ACK", True):
+        return
+
+    reply = (
+        os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
+        or "现在可以了"
+    )
+    speak_result = adapter.speak(reply)
+    print(
+        "[FrontGateRoom] room_ready_ack "
+        f"reply={reply} ok={speak_result.ok} stdout={speak_result.stdout!r} stderr={speak_result.stderr!r}",
+        flush=True,
+    )
+
+
 async def _run(args: argparse.Namespace) -> int:
     settings = load_settings(ROOT_DIR / "config.yaml")
+    adapter = G1Om1Adapter()
     started_processes: list[tuple[str, subprocess.Popen[bytes]]] = []
     signal_path = Path(args.session_exit_signal_file).expanduser()
     os.environ["INTERRUPT_FRONTGATE_SESSION_EXIT_SIGNAL_FILE"] = str(signal_path)
@@ -387,6 +408,7 @@ async def _run(args: argparse.Namespace) -> int:
             session_ready = bool(agents and robots)
             if session_ready:
                 if not saw_session_ready:
+                    _speak_room_ready(adapter)
                     print(
                         "[FrontGateRoom] room session active "
                         f"room={settings.rtc_endpoint.room_name} agents={agents} robots={robots}",

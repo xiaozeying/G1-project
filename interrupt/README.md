@@ -42,8 +42,15 @@ interrupt/deploy/systemd/user/interrupt-frontgate.service
 - `OM1_AUDIO_GAIN=2.2`
 - `PULSE_SINK=alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo`
 - `INTERRUPT_RTC_OUTPUT_DEVICE=pulse`
+- `INTERRUPT_G1_NAV_BASE_URL=http://127.0.0.1:5000`
+- `INTERRUPT_G1_NAV_TIMEOUT_S=5`
 
-本目录现在以 `LiveKit Agents console mode + Gemini Live` 作为主运行路径。
+当前运行口径分为两条：
+
+- 机器人真机主线：
+  `interrupt-frontgate.service` -> 前门唤醒 -> 房间会话 -> Gemini Live -> G1 / OM1
+- 本地开发调试主线：
+  `LiveKit Agents console mode + Gemini Live`
 
 目标能力：
 
@@ -52,19 +59,22 @@ interrupt/deploy/systemd/user/interrupt-frontgate.service
 - 保持与 LiveKit Agents Playground 接近的会话能力
 - 后续可接入外部三语言唤醒词模块
 - 后续可接入 MCP 工具链
-- 保留网页端 / LiveKit 房间模式作为可选分支，不再是主路径
+- 保留网页端作为可选分支，不再是主路径
 
 ## 主架构
 
 ```text
-Local terminal
-  -> LiveKit Agents console mode
+Robot frontgate
+  -> interrupt-frontgate.service
+  -> wake word
+  -> room session / realtime agent
   -> Gemini Live realtime model
-  -> optional MCP servers
-  -> optional wake-word adapter
+  -> G1 / OM1 tools and feedback
+  -> return to frontgate on idle timeout
 ```
 
-`console mode` 是 LiveKit 官方提供的本地单会话调试模式，不经过 LiveKit 房间，也不需要网页端。
+机器人当前已验证主线走前门唤醒和房间会话，不再以旧 `console` 直连路径作为真机默认入口。
+`console mode` 仍保留为本地单机会话调试模式，不经过 LiveKit 房间，也不需要网页端。
 
 当前回复播报策略支持通过配置显式切换：
 
@@ -145,7 +155,7 @@ source .venv/bin/activate
 python tools/check_env.py
 ```
 
-## 本地主路径
+## 本地调试路径
 
 语音模式：
 
@@ -188,6 +198,60 @@ cd /home/zz/HongTu/interrupt
 - 用户输入语言检测
 - 显式锁定回复语言
 - 恢复自动跟随用户语言
+
+导航 bridge 调用链路自测：
+
+```bash
+cd /home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16
+python3 interrupt/tools/nav_bridge_smoke_test.py
+```
+
+这条脚本不会连接真机 ROS，只会在本机临时起一个 mock HTTP bridge，验证：
+
+- `interrupt` 侧 `G1Om1Adapter`
+- `OM1/scripts/g1_nav_command.py`
+- `g1_om1_cli.py`
+- 导航地点查询 / 记忆地点 / 发导航请求
+
+## G1 语音导航桥接
+
+当前推荐的真机导航桥接启动顺序：
+
+1. 先启动 G1Nav2D 的 ROS1 定位与 `move_base`
+2. 再启动本地 HTTP bridge
+3. 最后启动 `interrupt-frontgate.service`
+
+桥接服务启动命令：
+
+```bash
+cd /home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16
+bash G1Nav2D/run_nav_bridge.sh
+```
+
+可选环境变量：
+
+```bash
+G1_NAV_BRIDGE_HOST=127.0.0.1
+G1_NAV_BRIDGE_PORT=5000
+G1_NAV_MAP_FILE=/home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16/map/map_fix.yaml
+G1_NAV_ACTION_SERVER=move_base
+G1_NAV_FRAME_ID=map
+```
+
+本地检查命令：
+
+```bash
+python3 interrupt/tools/g1_om1_cli.py list-locations
+python3 interrupt/tools/g1_om1_cli.py remember 前台 --description 测试点
+python3 interrupt/tools/g1_om1_cli.py navigate 前台
+```
+
+当前口令边界：
+
+- 支持：`带我去前台`、`去会议室`、`navigate to table`
+- 支持：`记住这里是前台`、`save this location as front desk`
+- 支持：`有哪些地点可以去`
+- 暂不支持：`往前走几步`、`后退一点`、`转个圈`
 
 如果要开始试“专用 yue-HK TTS”，可额外配置：
 
@@ -282,7 +346,7 @@ INTERRUPT_RTC_OUTPUT_DEVICE=pulse \
 ./run_robot_rtc_endpoint.sh
 ```
 
-这条链路当前是并行验证用，不会替换现有 `console` 主路径。
+这条链路当前是并行验证用，不会替换现有机器人前门主路径。
 如果机器人连不上 `LIVEKIT_URL=ws://<开发机IP>:7880`，优先先确认本机 `run_livekit_server.sh`
 是否以 `LIVEKIT_BIND_ADDRESS=0.0.0.0` 启动，否则 `livekit-server --dev` 在新版本里可能只监听 `127.0.0.1`。
 建议先把主回答切到：
@@ -385,10 +449,17 @@ python tools/g1_om1_cli.py speak "我在，请说"
 如需覆盖默认脚本路径，可设置：
 
 ```bash
-export INTERRUPT_G1_OM1_PYTHON=/home/unitree/HongTu/OM1/.venv/bin/python
+export INTERRUPT_G1_OM1_PYTHON=/home/unitree/HongTu/OM1/.venv-g1/bin/python
 export INTERRUPT_G1_DIRECT_COMMAND_SCRIPT=/home/unitree/HongTu/OM1/scripts/g1_direct_command_fallback.py
 export INTERRUPT_G1_FEEDBACK_SCRIPT=/home/unitree/HongTu/OM1/scripts/g1_watchdog_feedback.py
 export INTERRUPT_G1_INTERFACE=eth1
+```
+
+如果是 2026-05-07 这次刷到 Ubuntu 22.04 的 G1 恢复环境，真机实际可用 Unitree 接口改成了 `enP8p1s0`，
+恢复 `.env.local` 时应优先覆盖：
+
+```bash
+export INTERRUPT_G1_INTERFACE=enP8p1s0
 ```
 
 - 唤醒前门：
@@ -456,6 +527,13 @@ export INTERRUPT_FRONTGATE_SESSION_COMMAND="/home/zz/HongTu/interrupt/run_local_
 ```
 
 它会在前门阶段直接加载外部三语言唤醒模块，并在命中后拉起 session command。
+
+如果机器人上还没有 `wakeword-clean` 环境，先在 `g1-wakeword/` 下执行：
+
+```bash
+cd /home/unitree/HongTu/g1-wakeword
+./install_arm.sh
+```
 
 前门自测脚本：
 

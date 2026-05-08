@@ -13,6 +13,12 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.g1_dialogue_state import DialogueConfig, WakewordDialogueController
 from src.g1_om1_adapter import G1Om1AdapterConfig
+from src.navigation_intents import (
+    extract_navigation_destination,
+    extract_remember_location_name,
+    looks_like_relative_motion_command,
+    looks_like_saved_locations_query,
+)
 from src.om1_wakeword_gate import _normalize_followup_text, _normalize_wake_text
 
 
@@ -71,6 +77,32 @@ class AdapterDefaultsTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True):
             config = G1Om1AdapterConfig.from_env()
         self.assertEqual(config.unitree_interface, "eth1")
+
+    def test_navigation_script_default_exists_in_config(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True):
+            config = G1Om1AdapterConfig.from_env()
+        self.assertTrue(config.navigation_script.endswith("g1_nav_command.py"))
+
+
+class NavigationIntentTests(unittest.TestCase):
+    def test_extract_navigation_destination(self) -> None:
+        self.assertEqual(extract_navigation_destination("带我去电梯"), "电梯")
+        self.assertEqual(extract_navigation_destination("請帶我去 會議室 呀"), "會議室")
+        self.assertEqual(extract_navigation_destination("navigate to table"), "table")
+        self.assertEqual(extract_navigation_destination("go to charging station please"), "charging station")
+
+    def test_extract_remember_location_name(self) -> None:
+        self.assertEqual(extract_remember_location_name("记住这里是前台"), "前台")
+        self.assertEqual(extract_remember_location_name("save this location as meeting room"), "meeting room")
+
+    def test_relative_motion_not_treated_as_navigation(self) -> None:
+        self.assertTrue(looks_like_relative_motion_command("往前走几步"))
+        self.assertTrue(looks_like_relative_motion_command("turn around"))
+        self.assertIsNone(extract_navigation_destination("往前走几步"))
+
+    def test_saved_locations_query_detection(self) -> None:
+        self.assertTrue(looks_like_saved_locations_query("有哪些位置可以去"))
+        self.assertTrue(looks_like_saved_locations_query("where can you go"))
 
 
 if __name__ == "__main__":

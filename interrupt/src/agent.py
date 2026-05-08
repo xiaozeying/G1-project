@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -22,6 +23,12 @@ from livekit.plugins import google
 from src.console_audio_compat import apply_console_audio_compat_patch
 from src.g1_om1_adapter import G1Om1Adapter
 from src.integrations import build_mcp_servers, log_integration_summary
+from src.navigation_intents import (
+    extract_navigation_destination,
+    extract_remember_location_name,
+    looks_like_relative_motion_command,
+    looks_like_saved_locations_query,
+)
 from src.news import query_news
 from src.speech_feedback import SpeechFeedbackRouter
 from src.settings import load_settings
@@ -798,6 +805,12 @@ def _remember_recent_user_intents(text: str) -> None:
         direct = _classify_fastpath_command(text)
         if direct is not None:
             _RECENT_INTENTS.setdefault("direct", {})[direct[1]] = now
+        destination = extract_navigation_destination(text)
+        if destination:
+            _RECENT_INTENTS.setdefault("navigate", {})[destination] = now
+        remembered_name = extract_remember_location_name(text)
+        if remembered_name:
+            _RECENT_INTENTS.setdefault("remember_location", {})[remembered_name] = now
 
 
 def _recent_intents(kind: str) -> dict[str, float]:
@@ -820,13 +833,18 @@ def _is_recent_user_intent_valid(kind: str, payload: str) -> bool:
                     return True
         elif kind == "direct" and _classify_fastpath_command(latest_text) is not None:
             return True
+        elif kind == "navigate":
+            matched = extract_navigation_destination(latest_text)
+            if matched == payload:
+                return True
+        elif kind == "remember_location":
+            matched = extract_remember_location_name(latest_text)
+            if matched == payload:
+                return True
     remembered_payloads = _recent_intents(kind)
     if not remembered_payloads:
         return False
-    if kind == "action":
-        remembered_at = remembered_payloads.get(payload, 0.0)
-        return bool(remembered_at and now - remembered_at <= TOOL_INTENT_GUARD_WINDOW_S)
-    if kind == "led":
+    if kind in {"action", "led", "navigate", "remember_location"}:
         remembered_at = remembered_payloads.get(payload, 0.0)
         return bool(remembered_at and now - remembered_at <= TOOL_INTENT_GUARD_WINDOW_S)
     if kind == "direct":
@@ -957,6 +975,12 @@ def _query_ack_text(text: str) -> str | None:
         if language == REPLY_LANGUAGE_ENGLISH:
             return "Okay, I'll take a quick look."
         return "好的，我来帮你看看前面。"
+    if looks_like_saved_locations_query(normalized):
+        if language == REPLY_LANGUAGE_CANTONESE:
+            return "好啊，我而家睇下有咩已儲存地點。"
+        if language == REPLY_LANGUAGE_ENGLISH:
+            return "Okay, I'll check the saved locations."
+        return "好的，我来看看有哪些已保存地点。"
     if any(
         token in normalized
         for token in (
@@ -977,6 +1001,63 @@ def _query_ack_text(text: str) -> str | None:
             return "Okay, let me introduce myself first."
         return "好的，我先介绍一下自己。"
     return None
+
+
+def _navigation_ack_text(location: str) -> str:
+    return _localized_text(
+        f"好的，带你去{location}。",
+        f"好啊，依家帶你去{location}。",
+        f"Okay, taking you to {location}.",
+    )
+
+
+def _remember_location_ack_text(location: str) -> str:
+    return _localized_text(
+        f"好的，我记住这里是{location}。",
+        f"好啊，我記住呢度係{location}。",
+        f"Okay, I will remember this place as {location}.",
+    )
+
+
+def _relative_motion_not_supported_text() -> str:
+    return _localized_text(
+        "现在这条语音导航链路只支持去已保存地点，暂不支持前进几步、转圈这类相对移动指令。",
+        "而家呢条語音導航鏈路只支援去已儲存地點，暫時未支援前進幾步、轉圈呢類相對移動指令。",
+        "This voice navigation flow currently supports only saved destinations, not relative motion commands like stepping forward or spinning.",
+    )
+
+
+def _parse_command_json(stdout: str) -> dict[str, object] | None:
+    normalized = (stdout or "").strip()
+    if not normalized:
+        return None
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _format_locations_reply(payload: dict[str, object]) -> str:
+    locations = payload.get("locations")
+    if not isinstance(locations, list):
+        return _localized_text(
+            "我暂时没有拿到可导航地点列表。",
+            "我暫時未拎到可導航地點列表。",
+            "I could not get the saved navigation locations right now.",
+        )
+    names = [str(item).strip() for item in locations if str(item).strip()]
+    if not names:
+        return _localized_text(
+            "当前还没有已保存的导航地点。",
+            "而家仲未有已儲存嘅導航地點。",
+            "There are no saved navigation locations yet.",
+        )
+    return _localized_text(
+        f"目前可以去这些地点：{'，'.join(names)}。",
+        f"目前可以去呢啲地點：{'，'.join(names)}。",
+        f"I can go to these saved locations: {', '.join(names)}.",
+    )
 
 
 def _looks_like_weather_query(text: str) -> bool:
@@ -1170,6 +1251,8 @@ def _is_recent_query_intent_valid(kind: str) -> bool:
         return _looks_like_news_query(latest_text)
     if kind == "vision":
         return _looks_like_vision_query(latest_text)
+    if kind == "locations":
+        return looks_like_saved_locations_query(latest_text)
     return False
 
 
@@ -1529,6 +1612,114 @@ async def _execute_direct_text_local(text: str, *, source: str) -> str:
     return f"Direct command failed: {result.stderr or result.stdout or result.returncode}"
 
 
+async def _list_saved_locations_local() -> str:
+    if not G1_ADAPTER.navigation_available:
+        return _localized_text(
+            "导航工具当前不可用。",
+            "導航工具而家未可用。",
+            "Navigation tools are unavailable right now.",
+        )
+    result = await asyncio.to_thread(G1_ADAPTER.list_saved_locations, True)
+    LOGGER.info(
+        "list saved locations executed: ok=%s rc=%s stdout=%r stderr=%r",
+        result.ok,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+    )
+    payload = _parse_command_json(result.stdout)
+    if result.ok and payload is not None:
+        return _format_locations_reply(payload)
+    return _localized_text(
+        "我暂时拿不到地点列表。",
+        "我暫時拎唔到地點列表。",
+        "I couldn't fetch the saved locations right now.",
+    )
+
+
+async def _navigate_to_saved_location_local(location: str, *, source: str) -> str:
+    if looks_like_relative_motion_command(location):
+        return _relative_motion_not_supported_text()
+    if not G1_ADAPTER.navigation_available:
+        return _localized_text(
+            "导航工具当前不可用。",
+            "導航工具而家未可用。",
+            "Navigation tools are unavailable right now.",
+        )
+    await asyncio.to_thread(_speak_local_tool_ack, _navigation_ack_text(location))
+    result = await asyncio.to_thread(G1_ADAPTER.navigate_to_location, location)
+    LOGGER.info(
+        "navigate to location executed: source=%s location=%s ok=%s rc=%s stdout=%r stderr=%r",
+        source,
+        location,
+        result.ok,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+    )
+    payload = _parse_command_json(result.stdout)
+    if result.ok:
+        if payload and payload.get("location"):
+            resolved = str(payload["location"]).strip() or location
+            return _localized_text(
+                f"正在前往{resolved}。",
+                f"而家前往{resolved}。",
+                f"Heading to {resolved} now.",
+            )
+        return _localized_text(
+            f"正在前往{location}。",
+            f"而家前往{location}。",
+            f"Heading to {location} now.",
+        )
+    if payload and payload.get("error") == "location_not_found":
+        return _format_locations_reply(payload)
+    return _localized_text(
+        f"暂时没法导航到{location}。",
+        f"暫時未能導航去{location}。",
+        f"I couldn't start navigation to {location} right now.",
+    )
+
+
+async def _remember_current_location_local(
+    location: str,
+    *,
+    description: str = "",
+    source: str,
+) -> str:
+    if not G1_ADAPTER.navigation_available:
+        return _localized_text(
+            "地点记忆工具当前不可用。",
+            "地點記憶工具而家未可用。",
+            "Location memory tools are unavailable right now.",
+        )
+    await asyncio.to_thread(_speak_local_tool_ack, _remember_location_ack_text(location))
+    result = await asyncio.to_thread(
+        G1_ADAPTER.remember_location,
+        location,
+        description=description,
+    )
+    LOGGER.info(
+        "remember location executed: source=%s location=%s ok=%s rc=%s stdout=%r stderr=%r",
+        source,
+        location,
+        result.ok,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+    )
+    if result.ok:
+        return _localized_text(
+            f"已经记住这里是{location}。",
+            f"已經記住呢度係{location}。",
+            f"I have remembered this place as {location}.",
+        )
+    return _localized_text(
+        f"暂时没法记住{location}这个地点。",
+        f"暫時未能記住{location}呢個地點。",
+        f"I couldn't save {location} as a location right now.",
+    )
+
+
 async def _complete_action_window(reason: str) -> None:
     if ACTION_BUSY_HOLD_S > 0:
         await asyncio.sleep(ACTION_BUSY_HOLD_S)
@@ -1669,6 +1860,70 @@ class InterruptAssistant(Agent):
             )
             return f"ignored mismatched direct command intent for {classification[1]}"
         return await _execute_direct_text_local(text, source="tool")
+
+    @function_tool(
+        name="list_saved_locations",
+        description="List the saved navigation locations currently available on the robot.",
+    )
+    async def list_saved_locations(self) -> str:
+        if not _is_recent_query_intent_valid("locations"):
+            latest_text, _ = _latest_user_text()
+            LOGGER.warning(
+                "reject saved locations tool execution due to mismatched latest user intent: latest_user_text=%r",
+                latest_text,
+            )
+            return _localized_text(
+                "刚才没有听到明确的地点列表请求，我先不查询地点。",
+                "啱啱未聽到明確嘅地點列表要求，我而家先唔查。",
+                "I didn't hear a clear request for the saved locations just now, so I won't list them yet.",
+            )
+        return await _list_saved_locations_local()
+
+    @function_tool(
+        name="navigate_to_saved_location",
+        description="Navigate to one saved destination by exact location label only.",
+    )
+    async def navigate_to_saved_location(self, location: str) -> str:
+        normalized_location = location.strip()
+        if looks_like_relative_motion_command(normalized_location):
+            return _relative_motion_not_supported_text()
+        if not _is_recent_user_intent_valid("navigate", normalized_location):
+            latest_text, _ = _latest_user_text()
+            LOGGER.warning(
+                "reject navigate tool execution due to mismatched latest user intent: location=%r latest_user_text=%r",
+                normalized_location,
+                latest_text,
+            )
+            return _localized_text(
+                "刚才没有听到明确的目标地点导航请求，我先不启动导航。",
+                "啱啱未聽到明確嘅目標地點導航要求，我而家先唔啟動導航。",
+                "I didn't hear a clear destination navigation request just now, so I won't start navigation yet.",
+            )
+        return await _navigate_to_saved_location_local(normalized_location, source="tool")
+
+    @function_tool(
+        name="remember_current_location",
+        description="Save the robot's current position as a named location.",
+    )
+    async def remember_current_location(self, location: str, description: str = "") -> str:
+        normalized_location = location.strip()
+        if not _is_recent_user_intent_valid("remember_location", normalized_location):
+            latest_text, _ = _latest_user_text()
+            LOGGER.warning(
+                "reject remember location tool execution due to mismatched latest user intent: location=%r latest_user_text=%r",
+                normalized_location,
+                latest_text,
+            )
+            return _localized_text(
+                "刚才没有听到明确的记地点请求，我先不保存。",
+                "啱啱未聽到明確嘅記地點要求，我而家先唔保存。",
+                "I didn't hear a clear request to save this location just now, so I won't save it yet.",
+            )
+        return await _remember_current_location_local(
+            normalized_location,
+            description=description.strip(),
+            source="tool",
+        )
 
     @function_tool(
         name="get_weather",
@@ -1846,7 +2101,11 @@ def _effective_instructions() -> str:
             "5. 用户询问新闻、热点新闻、科技新闻等时，优先调用 get_news 获取最新新闻，不要直接说拿不到。\n"
             "6. 当用户明确询问你看到了什么、前面有什么、某个物体/人是否在画面里、帮他看看眼前场景时，优先调用 ask_camera_vision。\n"
             "7. 视觉工具只回答画面中能直接看到的内容；如果当前没有视觉能力或画面不清楚，要诚实说明。\n"
-            "8. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
+            "8. 当用户问有哪些已保存地点、可以去哪里时，优先调用 list_saved_locations。\n"
+            "9. 当用户明确说“带我去某地 / 去某地 / navigate to 某地”时，优先调用 navigate_to_saved_location，参数只填地点名。\n"
+            "10. 当用户明确说“记住这里是某地 / save this location as ...”时，优先调用 remember_current_location。\n"
+            "11. 不要把“往前走几步、后退一点、转个圈、左转右转”这类相对运动命令错误映射成地点导航；当前这类命令只能如实说明暂不支持。\n"
+            "12. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
         )
     return SETTINGS.agent.instructions.rstrip() + extra + tool_extra
 

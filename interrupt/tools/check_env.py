@@ -20,6 +20,23 @@ MODULES = ["yaml", "dotenv", "google.genai", "livekit.agents", "livekit.api"]
 COMMANDS = ["livekit-server"]
 
 
+def _robot_frontgate_defaults() -> dict[str, str]:
+    root = str(ROOT_DIR)
+    return {
+        "factory": "src.om1_wakeword_gate:factory",
+        "wakeword_script": "/home/unitree/g1-wakeword/wakeword_adaptive.py",
+        "session_command": f"{root}/run_frontgate_room_session.sh",
+        "frontgate_python": "/home/unitree/miniforge3/envs/wakeword-clean/bin/python",
+    }
+
+
+def _should_infer_robot_frontgate_defaults() -> bool:
+    return (
+        Path("/home/unitree/miniforge3/envs/wakeword-clean/bin/python").exists()
+        and (ROOT_DIR / "run_robot_frontgate_session.sh").exists()
+    )
+
+
 def check_modules() -> None:
     print("Python 依赖检查:")
     for module in MODULES:
@@ -80,6 +97,24 @@ def check_env_var() -> None:
         "  INTERRUPT_MCP_HTTP_URLS -> "
         f"{'SET' if os.getenv('INTERRUPT_MCP_HTTP_URLS') else 'EMPTY'}"
     )
+    print(
+        "  INTERRUPT_G1_NAV_BASE_URL -> "
+        f"{os.getenv('INTERRUPT_G1_NAV_BASE_URL') or 'http://localhost:5000'}"
+    )
+    print(
+        "  INTERRUPT_G1_NAV_TIMEOUT_S -> "
+        f"{os.getenv('INTERRUPT_G1_NAV_TIMEOUT_S') or '5'}"
+    )
+    if _should_infer_robot_frontgate_defaults():
+        defaults = _robot_frontgate_defaults()
+        factory = os.getenv("INTERRUPT_WAKE_WORD_FACTORY", "").strip() or defaults["factory"]
+        session_command = (
+            os.getenv("INTERRUPT_FRONTGATE_SESSION_COMMAND", "").strip()
+            or defaults["session_command"]
+        )
+        print(f"  EFFECTIVE_FRONTGATE_FACTORY -> {factory}")
+        print(f"  EFFECTIVE_FRONTGATE_SESSION_COMMAND -> {session_command}")
+        print(f"  EFFECTIVE_FRONTGATE_PYTHON -> {defaults['frontgate_python']}")
 
 
 def check_config() -> None:
@@ -113,7 +148,7 @@ def check_g1_om1_adapter() -> None:
     paths = adapter.script_paths()
     checks = adapter.validate_paths()
     for key, value in paths.items():
-        if key == "unitree_interface":
+        if key in {"unitree_interface", "navigation_base_url", "navigation_timeout_s"}:
             print(f"  INFO {key} -> {value}")
             continue
         status = "OK" if checks.get(key, False) else "WARN"
@@ -125,6 +160,10 @@ def check_wakeword_factory_slot() -> None:
     from src.wakeword_runtime import load_factory_from_spec
 
     factory_spec = os.getenv("INTERRUPT_WAKE_WORD_FACTORY", "").strip()
+    inferred = False
+    if not factory_spec and _should_infer_robot_frontgate_defaults():
+        factory_spec = _robot_frontgate_defaults()["factory"]
+        inferred = True
     if not factory_spec:
         print("  INFO wake_word_factory -> EMPTY (当前将回退到 mock stdin factory)")
         return
@@ -135,9 +174,17 @@ def check_wakeword_factory_slot() -> None:
         print(f"  FAIL wake_word_factory -> {factory_spec} ({exc})")
         return
 
-    print(f"  OK   wake_word_factory -> {factory_spec}")
+    prefix = "OK"
+    label = "wake_word_factory"
+    if inferred:
+        label = "wake_word_factory (robot default)"
+    print(f"  {prefix:<4} {label} -> {factory_spec}")
     if "om1_wakeword_gate:factory" in factory_spec:
-        wakeword_script = os.getenv("WAKEWORD_SCRIPT", "/home/unitree/g1-wakeword/wakeword_adaptive.py")
+        wakeword_script = os.getenv("WAKEWORD_SCRIPT", "").strip()
+        if not wakeword_script and _should_infer_robot_frontgate_defaults():
+            wakeword_script = _robot_frontgate_defaults()["wakeword_script"]
+        if not wakeword_script:
+            wakeword_script = "/home/unitree/g1-wakeword/wakeword_adaptive.py"
         exists = Path(wakeword_script).exists()
         status = "OK" if exists else "WARN"
         print(f"  {status:<4} wakeword_script -> {wakeword_script}")
@@ -145,15 +192,20 @@ def check_wakeword_factory_slot() -> None:
 
 def check_frontgate_session_command() -> None:
     print("\n前门会话命令检查:")
-    command = os.getenv(
-        "INTERRUPT_FRONTGATE_SESSION_COMMAND",
-        str(ROOT_DIR / "run_local_voice_agent.sh"),
-    ).strip()
-    print(f"  INFO session_command -> {command}")
-    if command == str(ROOT_DIR / "run_local_voice_agent.sh"):
-        exists = Path(command).exists()
-        status = "OK" if exists else "WARN"
-        print(f"  {status:<4} default_session_launcher -> {command}")
+    command = os.getenv("INTERRUPT_FRONTGATE_SESSION_COMMAND", "").strip()
+    inferred = False
+    if not command and _should_infer_robot_frontgate_defaults():
+        command = _robot_frontgate_defaults()["session_command"]
+        inferred = True
+    if not command:
+        command = str(ROOT_DIR / "run_local_voice_agent.sh")
+    label = "session_command"
+    if inferred:
+        label = "session_command (robot default)"
+    print(f"  INFO {label} -> {command}")
+    exists = Path(command).exists()
+    status = "OK" if exists else "WARN"
+    print(f"  {status:<4} session_launcher_exists -> {command}")
 
 
 def check_local_audio_stack() -> None:

@@ -7,6 +7,7 @@ import re
 import select
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ DEFAULT_EXTRA_WAKEWORDS = (
     "笨笨",
     "笨笨同学",
 )
+DEFAULT_WAKEWORD_SIMILARITY_THRESHOLD = 0.62
 _ALSA_HW_RE = re.compile(
     r"card\s+\d+:\s+(?P<card_id>[^ ]+)\s+\[(?P<card_name>[^\]]+)\],\s+"
     r"device\s+(?P<device_num>\d+):\s+(?P<device_name>.+)"
@@ -155,20 +157,36 @@ def _normalize_wake_text(text: str) -> str:
     replacements = {
         "笨笨你好": "你好笨笨",
         "笨笨，你好": "你好笨笨",
+        "本本你好": "你好笨笨",
+        "奔奔你好": "你好笨笨",
         "本本": "笨笨",
         "对本": "笨笨",
         "對本": "笨笨",
+        "奔奔": "笨笨",
+        "本笨": "笨笨",
         "贝贝同学": "笨笨同学",
         "貝貝同學": "笨笨同学",
         "根本同学": "笨笨同学",
         "根本同學": "笨笨同学",
         "本同学": "笨笨同学",
         "本同學": "笨笨同学",
+        "本本同学": "笨笨同学",
+        "本本同學": "笨笨同学",
         "笨本同学": "笨笨同学",
         "本笨同学": "笨笨同学",
         "奔笨同学": "笨笨同学",
         "笨笨同學": "笨笨同学",
         "benben同学": "笨笨同学",
+        "这对同学": "笨笨同学",
+        "這對同學": "笨笨同学",
+        "这都同学": "笨笨同学",
+        "這都同學": "笨笨同学",
+        "这的同学": "笨笨同学",
+        "這的同學": "笨笨同学",
+        "这得同学": "笨笨同学",
+        "這得同學": "笨笨同学",
+        "这顿同学": "笨笨同学",
+        "這頓同學": "笨笨同学",
     }
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
@@ -210,6 +228,7 @@ def _load_wakeword_module(script_path: str):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load wakeword module from: {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -489,6 +508,14 @@ def factory(
     class FrontGateAdaptiveWakeWordSystem(BaseAdaptiveWakeWordSystem):
         def __init__(self) -> None:
             super().__init__(device_id=None)
+            threshold_raw = os.environ.get(
+                "OM1_WAKEWORD_SIMILARITY_THRESHOLD",
+                str(DEFAULT_WAKEWORD_SIMILARITY_THRESHOLD),
+            ).strip()
+            try:
+                self.SIMILARITY_THRESHOLD = float(threshold_raw)
+            except ValueError:
+                self.SIMILARITY_THRESHOLD = DEFAULT_WAKEWORD_SIMILARITY_THRESHOLD
             if requested_wakewords:
                 all_words = []
                 for keywords in self.WAKE_WORDS.values():
