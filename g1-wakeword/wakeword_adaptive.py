@@ -29,6 +29,28 @@ else:
 
 DEFAULT_MODEL_PATH = "/home/unitree/.cache/modelscope/hub/iic/SenseVoiceSmall"
 DEFAULT_WAKEWORD_SIMILARITY_THRESHOLD = 0.62
+_WAKE_HISTORY_NOISE = {
+    ".",
+    "。",
+    ",",
+    "，",
+    "我",
+    "我。",
+    "我.",
+    "嗯",
+    "嗯。",
+    "嗯.",
+    "哦",
+    "哦。",
+    "哦.",
+    "呀",
+    "呀。",
+    "呀.",
+    "yeah",
+    "yeah.",
+    "good",
+    "good.",
+}
 
 
 def _clean_text(text: str) -> str:
@@ -47,6 +69,20 @@ def _normalize_detected_text(text: str) -> str:
         "笨笨，你好": "你好笨笨",
         "本本你好": "你好笨笨",
         "奔奔你好": "你好笨笨",
+        "你好笨": "你好笨笨",
+        "女你好笨": "你好笨笨",
+        "对问年好": "你好笨笨",
+        "對問年好": "你好笨笨",
+        "对问你好": "你好笨笨",
+        "對問你好": "你好笨笨",
+        "对问您好": "你好笨笨",
+        "對問您好": "你好笨笨",
+        "对问笨笨": "你好笨笨",
+        "對問笨笨": "你好笨笨",
+        "哈喽笨": "哈喽笨笨",
+        "哈囉笨": "哈喽笨笨",
+        "哈罗笨": "哈喽笨笨",
+        "哈啰笨": "哈喽笨笨",
         "笨本同学": "笨笨同学",
         "本笨同学": "笨笨同学",
         "奔笨同学": "笨笨同学",
@@ -72,7 +108,21 @@ def _normalize_detected_text(text: str) -> str:
     }
     for source, target in replacements.items():
         cleaned = cleaned.replace(source, target)
+    cleaned = re.sub(r"(笨笨){2,}", "笨笨", cleaned)
+    cleaned = re.sub(r"(本本){2,}", "笨笨", cleaned)
+    cleaned = re.sub(r"(奔奔){2,}", "笨笨", cleaned)
     return cleaned.strip()
+
+
+def _should_keep_wake_history_text(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if compact.casefold() in _WAKE_HISTORY_NOISE:
+        return False
+    if compact in {"我", "嗯", "哦", "呀"}:
+        return False
+    return True
 
 
 def _similarity(a: str, b: str) -> float:
@@ -106,7 +156,7 @@ class WakeDetection:
 class AdaptiveWakeWordSystem:
     TARGET_SAMPLE_RATE = 16000
     WAKE_WORDS = {
-        "zh": ["你好笨笨", "笨笨", "笨笨同学"],
+        "zh": ["你好笨笨", "你好笨", "笨笨", "笨笨同学", "哈喽笨笨"],
         "yue": ["雷猴笨笨", "多多同学", "多多"],
         "en": ["hello benben", "benben"],
     }

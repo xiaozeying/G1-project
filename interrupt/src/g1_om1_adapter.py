@@ -85,6 +85,7 @@ class G1Om1AdapterConfig:
     python_executable: str
     direct_command_script: str
     feedback_script: str
+    speak_script: str
     navigation_script: str
     navigation_base_url: str
     navigation_timeout_s: float
@@ -105,6 +106,10 @@ class G1Om1AdapterConfig:
         feedback_script = os.getenv(
             "INTERRUPT_G1_FEEDBACK_SCRIPT",
             str(om1_root / "scripts" / "g1_watchdog_feedback.py"),
+        ).strip()
+        speak_script = os.getenv(
+            "INTERRUPT_G1_SPEAK_SCRIPT",
+            "",
         ).strip()
         navigation_script = os.getenv(
             "INTERRUPT_G1_NAVIGATION_SCRIPT",
@@ -128,6 +133,7 @@ class G1Om1AdapterConfig:
             python_executable=python_executable,
             direct_command_script=direct_command_script,
             feedback_script=feedback_script,
+            speak_script=speak_script,
             navigation_script=navigation_script,
             navigation_base_url=navigation_base_url,
             navigation_timeout_s=navigation_timeout_s,
@@ -175,6 +181,16 @@ class G1Om1Adapter:
         volume: int = 100,
         check: bool = False,
     ) -> G1Om1CommandResult:
+        speak_script = self.config.speak_script.strip()
+        if speak_script:
+            return self._run(
+                [
+                    "bash",
+                    speak_script,
+                    text,
+                ],
+                check=check,
+            )
         return self._run(
             [
                 self.config.python_executable,
@@ -281,6 +297,7 @@ class G1Om1Adapter:
             "python_executable": self.config.python_executable,
             "direct_command_script": self.config.direct_command_script,
             "feedback_script": self.config.feedback_script,
+            "speak_script": self.config.speak_script,
             "navigation_script": self.config.navigation_script,
             "navigation_base_url": self.config.navigation_base_url,
             "navigation_timeout_s": str(self.config.navigation_timeout_s),
@@ -293,6 +310,7 @@ class G1Om1Adapter:
             "python_executable": Path(self.config.python_executable).exists(),
             "direct_command_script": Path(self.config.direct_command_script).exists(),
             "feedback_script": Path(self.config.feedback_script).exists(),
+            "speak_script": (not self.config.speak_script) or Path(self.config.speak_script).exists(),
             "navigation_script": Path(self.config.navigation_script).exists(),
         }
 

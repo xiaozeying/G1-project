@@ -1,6 +1,6 @@
 # interrupt 项目进展记录
 
-最后更新时间：2026-05-07
+最后更新时间：2026-05-11
 
 ## 当前状态
 
@@ -16,6 +16,36 @@
 ```
 
 网页端与本地 Playground 仍保留，但已经不是当前真机联调主线。
+
+## 2026-05-11 语音链恢复收口
+
+本轮把“刷机后可一步恢复”的最小闭环又补齐了一层，当前已经明确：
+
+- 前门 `wake_ack` 与房间 `room_ready_ack` 都可正常出声
+- 普通话房间回复已经稳定走外接 USB 播报
+- 英语房间回复已经稳定走外接 USB 播报，当前推荐女声是 `en-US-JennyNeural`
+- 粤语仍保留单独 `edge-tts` 链
+- `G1Om1Adapter.speak()` 已支持通过 `INTERRUPT_G1_SPEAK_SCRIPT` 分流到外部 USB TTS 脚本
+
+当前最终推荐：
+
+- 中文：`zh-CN-XiaoxiaoNeural`
+- 英文：`en-US-JennyNeural`
+- 粤语：`zh-HK-HiuGaaiNeural`
+
+同时，本轮还确认了一个重要工程边界：
+
+- 这台 Ubuntu 22.04 机器人上的 `g1_watchdog_feedback.py -> TtsMaker()` 不能稳定通过 `PULSE_SINK` 改路由到 USB
+- 因此当前最稳恢复方案不是继续押注 Unitree 本地 TTS 出 USB
+- 而是保住 `external_usb_tts.sh` 这条可恢复、可验证、可显式指定 USB sink 的路径
+
+本轮已将关键脚本快照补进主仓：
+
+- `interrupt/restore_assets/om1/external_usb_tts.sh`
+
+完整恢复步骤见：
+
+- `interrupt/docs/VOICE_CHAIN_ONE_SHOT_RESTORE_2026-05-11.md`
 
 ## 2026-05-07 Ubuntu 22.04 恢复补记
 
@@ -73,7 +103,8 @@ interrupt/deploy/systemd/user/interrupt-frontgate.service
   - 前门已有基础音量门限，减少静音和噪声误触发
 - `src/g1_om1_adapter.py`
   - 默认 OM1 路径已按机器人优先级修正
-  - G1 默认接口已统一为 `eth1`
+  - G1 默认接口已统一为机器人当前真实可用口径优先
+  - 已支持 `INTERRUPT_G1_SPEAK_SCRIPT` 外部分流
 - `run_robot_frontgate_session.sh`
   - 已把机器人前门默认播放出口收口到 USB
   - 前门启动时会主动 `set-default-sink`、unmute 并拉到目标音量
