@@ -63,8 +63,11 @@ class FeedbackConfig:
 @dataclass
 class VisionConfig:
     enabled: bool
+    provider: str
+    api_key: str
     model: str
     base_url: str
+    image_path: str
     preferred_device: str
     width: int
     height: int
@@ -159,6 +162,24 @@ def _normalize_feedback_mode(value: object, *, default: str) -> str:
     return alias_map.get(normalized, normalized)
 
 
+def _normalize_vision_provider(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    alias_map = {
+        "": "gemini_openai_compat",
+        "gemini": "gemini_openai_compat",
+        "gemini_openai": "gemini_openai_compat",
+        "gemini_openai_compat": "gemini_openai_compat",
+        "openai": "openai_compatible",
+        "openai_compatible": "openai_compatible",
+        "local_openai": "openai_compatible",
+        "vllm": "openai_compatible",
+        "sglang": "openai_compatible",
+        "ollama": "ollama_native",
+        "ollama_native": "ollama_native",
+    }
+    return alias_map.get(normalized, normalized or "gemini_openai_compat")
+
+
 def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSettings:
     load_environment()
     path = Path(config_path) if config_path else _root_dir() / "config.yaml"
@@ -204,11 +225,19 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
         default="om1_mirror",
     )
 
-    if not gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
-
     if not livekit_url or not livekit_api_key or not livekit_api_secret:
         raise RuntimeError("LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET 未完整设置。")
+
+    vision_provider = _normalize_vision_provider(
+        os.getenv(
+            "INTERRUPT_VLM_PROVIDER",
+            raw.get("vision", {}).get("provider", "gemini_openai_compat"),
+        )
+    )
+    vision_api_key = os.getenv(
+        "INTERRUPT_VLM_API_KEY",
+        raw.get("vision", {}).get("api_key", gemini_api_key),
+    ).strip()
 
     return AppSettings(
         livekit=LiveKitConfig(
@@ -290,27 +319,31 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
             .strip()
             .lower()
             in {"1", "true", "yes", "on"},
+            provider=vision_provider,
+            api_key=vision_api_key,
             model=os.getenv(
-                "GEMINI_VLM_MODEL",
+                "INTERRUPT_VLM_MODEL",
                 os.getenv(
-                    "INTERRUPT_VLM_MODEL",
+                    "GEMINI_VLM_MODEL",
                     raw.get("vision", {}).get("model", "gemini-2.5-flash"),
                 ),
             ).strip()
             or "gemini-2.5-flash",
             base_url=os.getenv(
-                "GEMINI_BASE_URL",
+                "INTERRUPT_VLM_BASE_URL",
                 os.getenv(
-                    "INTERRUPT_VLM_BASE_URL",
-                    raw.get(
-                        "vision", {}
-                    ).get(
+                    "GEMINI_BASE_URL",
+                    raw.get("vision", {}).get(
                         "base_url",
                         "https://generativelanguage.googleapis.com/v1beta/openai/",
                     ),
                 ),
             ).strip()
             or "https://generativelanguage.googleapis.com/v1beta/openai/",
+            image_path=os.getenv(
+                "INTERRUPT_VLM_IMAGE_PATH",
+                raw.get("vision", {}).get("image_path", ""),
+            ).strip(),
             preferred_device=os.getenv(
                 "UNITREE_G1_CAMERA_DEVICE",
                 os.getenv(

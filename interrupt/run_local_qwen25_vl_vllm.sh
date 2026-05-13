@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export VLM_SERVER_HOST="${VLM_SERVER_HOST:-127.0.0.1}"
+export VLM_SERVER_PORT="${VLM_SERVER_PORT:-8000}"
+export VLM_SERVER_SERVED_MODEL_NAME="${VLM_SERVER_SERVED_MODEL_NAME:-Qwen2.5-VL-7B-Instruct}"
+export VLM_SERVER_DTYPE="${VLM_SERVER_DTYPE:-bfloat16}"
+export VLM_SERVER_MAX_MODEL_LEN="${VLM_SERVER_MAX_MODEL_LEN:-8192}"
+export VLM_SERVER_GPU_MEMORY_UTILIZATION="${VLM_SERVER_GPU_MEMORY_UTILIZATION:-0.90}"
+export VLM_SERVER_TENSOR_PARALLEL_SIZE="${VLM_SERVER_TENSOR_PARALLEL_SIZE:-1}"
+export VLM_SERVER_EXTRA_ARGS="${VLM_SERVER_EXTRA_ARGS:---limit-mm-per-prompt {\"image\":1}}"
+
+exec "${ROOT_DIR}/run_local_vllm_vision_server.sh"

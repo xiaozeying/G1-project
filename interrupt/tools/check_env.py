@@ -82,8 +82,32 @@ def check_env_var() -> None:
     print(f"  GEMINI_API_KEY -> {'SET' if os.getenv('GEMINI_API_KEY') else 'MISSING'}")
     print(f"  INTERRUPT_VLM_ENABLED -> {os.getenv('INTERRUPT_VLM_ENABLED', '0') or '0'}")
     print(
+        "  INTERRUPT_VLM_PROVIDER -> "
+        f"{os.getenv('INTERRUPT_VLM_PROVIDER') or 'gemini_openai_compat'}"
+    )
+    print(
+        "  INTERRUPT_VLM_API_KEY -> "
+        f"{'SET' if os.getenv('INTERRUPT_VLM_API_KEY') else 'EMPTY'}"
+    )
+    print(
+        "  INTERRUPT_VLM_BASE_URL -> "
+        f"{os.getenv('INTERRUPT_VLM_BASE_URL') or os.getenv('GEMINI_BASE_URL') or 'CONFIG_DEFAULT'}"
+    )
+    print(
+        "  INTERRUPT_VLM_MODEL -> "
+        f"{os.getenv('INTERRUPT_VLM_MODEL') or os.getenv('GEMINI_VLM_MODEL') or 'CONFIG_DEFAULT'}"
+    )
+    print(
+        "  INTERRUPT_VLM_IMAGE_PATH -> "
+        f"{os.getenv('INTERRUPT_VLM_IMAGE_PATH') or 'EMPTY'}"
+    )
+    print(
         "  UNITREE_G1_CAMERA_DEVICE -> "
         f"{os.getenv('UNITREE_G1_CAMERA_DEVICE') or 'EMPTY'}"
+    )
+    print(
+        "  INTERRUPT_VISION_EXTERNAL_CAPTURE_TIMEOUT_S -> "
+        f"{os.getenv('INTERRUPT_VISION_EXTERNAL_CAPTURE_TIMEOUT_S') or 'DEFAULT'}"
     )
     print(
         "  INTERRUPT_WAKE_WORD_FACTORY -> "
@@ -98,12 +122,24 @@ def check_env_var() -> None:
         f"{'SET' if os.getenv('INTERRUPT_MCP_HTTP_URLS') else 'EMPTY'}"
     )
     print(
+        "  INTERRUPT_G1_NAV_PROVIDER -> "
+        f"{os.getenv('INTERRUPT_G1_NAV_PROVIDER') or 'http_bridge'}"
+    )
+    print(
         "  INTERRUPT_G1_NAV_BASE_URL -> "
         f"{os.getenv('INTERRUPT_G1_NAV_BASE_URL') or 'http://localhost:5000'}"
     )
     print(
         "  INTERRUPT_G1_NAV_TIMEOUT_S -> "
         f"{os.getenv('INTERRUPT_G1_NAV_TIMEOUT_S') or '5'}"
+    )
+    print(
+        "  INTERRUPT_G1_NAV_LOCATIONS_FILE -> "
+        f"{os.getenv('INTERRUPT_G1_NAV_LOCATIONS_FILE') or 'EMPTY'}"
+    )
+    print(
+        "  INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY -> "
+        f"{os.getenv('INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY') or '0'}"
     )
     if _should_infer_robot_frontgate_defaults():
         defaults = _robot_frontgate_defaults()
@@ -132,7 +168,9 @@ def check_config() -> None:
         f"voice={settings.agent.voice} "
         f"console_text={settings.console.text_mode} "
         f"web={settings.web.host}:{settings.web.port} "
-        f"room={settings.web.room_name}"
+        f"room={settings.web.room_name} "
+        f"vision_provider={settings.vision.provider} "
+        f"vision_model={settings.vision.model}"
     )
 
 

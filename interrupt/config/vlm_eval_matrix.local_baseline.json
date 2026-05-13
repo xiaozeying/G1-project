@@ -1,0 +1,23 @@
+{
+  "reply_language": "zh-CN",
+  "image": "../OM1/system_hw_test/front_image.jpg",
+  "questions": [
+    {
+      "id": "scene_summary",
+      "text": "这张图里有什么？"
+    },
+    {
+      "id": "safety_front",
+      "text": "请判断前方空间、遮挡情况，以及手臂附近是否安全。"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "gemma3_ollama_local",
+      "provider": "ollama_native",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "gemma3:latest",
+      "structured": true
+    }
+  ]
+}

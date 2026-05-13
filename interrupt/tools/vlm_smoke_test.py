@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -30,6 +31,36 @@ def parse_args() -> argparse.Namespace:
         choices=["zh-CN", "zh-YUE", "en"],
         help="Reply language hint passed to the VLM prompt.",
     )
+    parser.add_argument(
+        "--provider",
+        default="",
+        help="Optional provider override, e.g. gemini_openai_compat or openai_compatible.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="Optional OpenAI-compatible base URL override.",
+    )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Optional model override.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default="",
+        help="Optional API key override. Leave empty for local no-auth servers.",
+    )
+    parser.add_argument(
+        "--image",
+        default="",
+        help="Optional static image path override for local validation without a live camera.",
+    )
+    parser.add_argument(
+        "--structured",
+        action="store_true",
+        help="Request structured observation JSON in addition to the natural-language answer.",
+    )
     return parser.parse_args()
 
 
@@ -39,9 +70,11 @@ def main() -> int:
     settings = load_settings(ROOT_DIR / "config.yaml")
     config = VisionChatConfig(
         enabled=settings.vision.enabled,
-        api_key=settings.gemini_api_key,
-        base_url=settings.vision.base_url,
-        model=settings.vision.model,
+        provider=args.provider.strip() or settings.vision.provider,
+        api_key=args.api_key.strip() or settings.vision.api_key,
+        base_url=args.base_url.strip() or settings.vision.base_url,
+        model=args.model.strip() or settings.vision.model,
+        image_path=args.image.strip() or settings.vision.image_path,
         preferred_device=settings.vision.preferred_device,
         width=settings.vision.width,
         height=settings.vision.height,
@@ -54,15 +87,27 @@ def main() -> int:
         config,
         question=args.question,
         reply_language=args.language,
+        structured=args.structured,
     )
     if not result.ok:
         print("status: FAIL")
+        print(f"provider: {config.provider}")
+        print(f"base_url: {config.base_url}")
+        print(f"model: {config.model}")
+        print(f"image_path: {config.image_path or '<camera>'}")
         print(f"error: {result.error}")
         print(f"camera_device: {result.camera_device or '<none>'}")
         return 1
     print("status: OK")
+    print(f"provider: {config.provider}")
+    print(f"base_url: {config.base_url}")
+    print(f"model: {config.model}")
+    print(f"image_path: {config.image_path or '<camera>'}")
     print(f"camera_device: {result.camera_device}")
     print(f"answer: {result.answer}")
+    if result.observation is not None:
+        print("observation_json:")
+        print(json.dumps(result.observation, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 

@@ -1,0 +1,37 @@
+{
+  "reply_language": "zh-CN",
+  "image": "../OM1/system_hw_test/front_image.jpg",
+  "questions": [
+    {
+      "id": "scene_summary",
+      "text": "这张图里有什么？"
+    },
+    {
+      "id": "safety_front",
+      "text": "请判断前方空间、遮挡情况，以及手臂附近是否安全。"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "gemma3_ollama_local",
+      "provider": "ollama_native",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "gemma3:latest",
+      "structured": true
+    },
+    {
+      "id": "qwen25_vl_local_openai",
+      "provider": "openai_compatible",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen2.5-VL-7B-Instruct",
+      "structured": true
+    },
+    {
+      "id": "glm_v_local_openai",
+      "provider": "openai_compatible",
+      "base_url": "http://127.0.0.1:9000/v1",
+      "model": "GLM-V",
+      "structured": true
+    }
+  ]
+}

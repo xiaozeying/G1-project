@@ -5,6 +5,7 @@ import glob
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -24,9 +25,11 @@ LOGGER = logging.getLogger("interrupt.vision")
 @dataclass
 class VisionChatConfig:
     enabled: bool
+    provider: str
     api_key: str
     base_url: str
     model: str
+    image_path: str
     preferred_device: str
     width: int
     height: int
@@ -42,6 +45,7 @@ class VisionChatResult:
     answer: str
     error: str = ""
     camera_device: str = ""
+    observation: dict[str, object] | None = None
 
 
 def ask_camera_question(
@@ -49,12 +53,28 @@ def ask_camera_question(
     *,
     question: str,
     reply_language: str,
+    structured: bool = False,
 ) -> VisionChatResult:
     if not config.enabled:
         return VisionChatResult(ok=False, answer="", error="vision_disabled")
-    if not config.api_key:
+    if _vision_backend_requires_api_key(config) and not config.api_key:
         return VisionChatResult(ok=False, answer="", error="missing_api_key")
-    if cv2 is None:
+    if config.image_path.strip():
+        image_path = Path(config.image_path.strip()).expanduser()
+        if not image_path.exists() or not image_path.is_file():
+            return VisionChatResult(ok=False, answer="", error="image_not_found", camera_device=str(image_path))
+        try:
+            encoded = _encode_image_file_base64(image_path)
+        except Exception as exc:
+            LOGGER.warning("failed to encode static image: path=%s error=%s", image_path, exc)
+            return VisionChatResult(
+                ok=False,
+                answer="",
+                error="image_encode_failed",
+                camera_device=str(image_path),
+            )
+        device = f"image:{image_path}"
+    elif cv2 is None:
         capture = _capture_with_external_python(config)
         if not capture.ok:
             return capture
@@ -69,7 +89,11 @@ def ask_camera_question(
         if not encoded:
             return VisionChatResult(ok=False, answer="", error="capture_failed", camera_device=device)
 
-    prompt = _build_prompt(question=question, reply_language=reply_language)
+    prompt = _build_prompt(
+        question=question,
+        reply_language=reply_language,
+        structured=structured,
+    )
     retry_attempts = max(1, int(os.getenv("INTERRUPT_VISION_CHAT_RETRY_ATTEMPTS", "4").strip() or "4"))
     retry_delay_s = max(
         0.1,
@@ -81,12 +105,23 @@ def ask_camera_question(
     )
     for attempt in range(1, retry_attempts + 1):
         try:
-            answer = _request_gemini_vision(
+            response_text = _request_vision_backend(
                 config,
                 prompt=prompt,
                 frame_b64=encoded,
             )
-            return VisionChatResult(ok=True, answer=answer, camera_device=device)
+            if not structured:
+                return VisionChatResult(ok=True, answer=response_text, camera_device=device)
+            observation = _parse_structured_observation(
+                response_text,
+                reply_language=reply_language,
+            )
+            return VisionChatResult(
+                ok=True,
+                answer=observation["natural_answer"],
+                camera_device=device,
+                observation=observation,
+            )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             LOGGER.warning(
@@ -114,7 +149,7 @@ def ask_camera_question(
     return VisionChatResult(ok=False, answer="", error="http_503", camera_device=device)
 
 
-def _build_prompt(*, question: str, reply_language: str) -> str:
+def _build_prompt(*, question: str, reply_language: str, structured: bool) -> str:
     language_hint = {
         "zh-YUE": "请只用自然粤语回答。",
         "en": "Reply only in natural English.",
@@ -122,6 +157,11 @@ def _build_prompt(*, question: str, reply_language: str) -> str:
     cleaned_question = (question or "").strip()
     if not cleaned_question:
         cleaned_question = "请描述你现在看到的内容。"
+    if structured:
+        return _build_structured_prompt(
+            question=cleaned_question,
+            reply_language=reply_language,
+        )
     return (
         f"{language_hint}"
         "你正在查看机器人当前正前方相机的单帧画面。"
@@ -133,7 +173,65 @@ def _build_prompt(*, question: str, reply_language: str) -> str:
     )
 
 
-def _request_gemini_vision(config: VisionChatConfig, *, prompt: str, frame_b64: str) -> str:
+def _build_structured_prompt(*, question: str, reply_language: str) -> str:
+    natural_answer_hint = {
+        "zh-YUE": "natural_answer 必须使用自然粤语。",
+        "en": "natural_answer must be natural English.",
+    }.get(reply_language, "natural_answer 必须使用自然普通话。")
+    return (
+        "你正在查看机器人当前正前方相机的单帧画面。"
+        "只根据画面中直接可见的信息回答，不要猜测画面外内容。"
+        "如果看不清、遮挡严重或无法判断，就明确标成 unknown。"
+        f"{natural_answer_hint}"
+        "请只返回一个 JSON 对象，不要使用 Markdown 代码块，不要添加额外说明。"
+        'JSON 必须包含这些字段：'
+        '"natural_answer",'
+        '"person_detected",'
+        '"person_count_estimate",'
+        '"distance_band",'
+        '"obstacle_near_arms",'
+        '"free_space_front",'
+        '"human_attention",'
+        '"scene_visibility".'
+        '字段约束：'
+        '"person_detected" 只能是 "yes" / "no" / "unknown"；'
+        '"person_count_estimate" 只能是整数或 null；'
+        '"distance_band" 只能是 "near" / "mid" / "far" / "unknown"；'
+        '"obstacle_near_arms" 只能是 "yes" / "no" / "unknown"；'
+        '"free_space_front" 只能是 "clear" / "partial" / "blocked" / "unknown"；'
+        '"human_attention" 只能是 "attending" / "not_attending" / "unknown"；'
+        '"scene_visibility" 只能是 "clear" / "blurry" / "occluded" / "dark" / "unknown"。'
+        f" 用户问题：{question}"
+    )
+
+
+def _vision_backend_requires_api_key(config: VisionChatConfig) -> bool:
+    return config.provider == "gemini_openai_compat"
+
+
+def _request_vision_backend(config: VisionChatConfig, *, prompt: str, frame_b64: str) -> str:
+    provider = (config.provider or "").strip().lower()
+    if provider in {"gemini_openai_compat", "openai_compatible"}:
+        return _request_openai_compatible_vision(
+            config,
+            prompt=prompt,
+            frame_b64=frame_b64,
+        )
+    if provider == "ollama_native":
+        return _request_ollama_native_vision(
+            config,
+            prompt=prompt,
+            frame_b64=frame_b64,
+        )
+    raise RuntimeError(f"unsupported_vision_provider:{provider or 'empty'}")
+
+
+def _request_openai_compatible_vision(
+    config: VisionChatConfig,
+    *,
+    prompt: str,
+    frame_b64: str,
+) -> str:
     payload = {
         "model": config.model,
         "messages": [
@@ -157,13 +255,10 @@ def _request_gemini_vision(config: VisionChatConfig, *, prompt: str, frame_b64: 
     request = urllib.request.Request(
         url=config.base_url.rstrip("/") + "/chat/completions",
         data=body,
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=_request_headers(config),
         method="POST",
     )
-    opener = urllib.request.build_opener(_proxy_handler_for_gemini())
+    opener = urllib.request.build_opener(_proxy_handler_for_vision_backend(config))
     with opener.open(request, timeout=max(5.0, config.capture_timeout_s + 5.0)) as response:
         parsed = json.loads(response.read().decode("utf-8"))
     choices = parsed.get("choices") or []
@@ -176,6 +271,58 @@ def _request_gemini_vision(config: VisionChatConfig, *, prompt: str, frame_b64: 
     normalized = _normalize_vision_answer(str(content or "").strip())
     if not normalized:
         raise RuntimeError("vision_response_is_empty")
+    return normalized
+
+
+def _request_headers(config: VisionChatConfig) -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return headers
+
+
+def _request_ollama_native_vision(
+    config: VisionChatConfig,
+    *,
+    prompt: str,
+    frame_b64: str,
+) -> str:
+    payload = {
+        "model": config.model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [frame_b64],
+            }
+        ],
+        "stream": False,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    base_url = _normalize_ollama_native_base_url(config.base_url)
+    request = urllib.request.Request(
+        url=base_url + "/api/chat",
+        data=body,
+        headers=_request_headers(config),
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=max(5.0, config.capture_timeout_s + 15.0)) as response:
+        parsed = json.loads(response.read().decode("utf-8"))
+    message = parsed.get("message") or {}
+    content = str(message.get("content") or "").strip()
+    normalized = _normalize_vision_answer(content)
+    if not normalized:
+        raise RuntimeError("vision_response_is_empty")
+    return normalized
+
+
+def _normalize_ollama_native_base_url(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
     return normalized
 
 
@@ -194,6 +341,90 @@ def _normalize_vision_answer(answer: str) -> str:
     if any("a" <= ch.lower() <= "z" for ch in normalized):
         return normalized + "."
     return normalized + "。"
+
+
+def _parse_structured_observation(response_text: str, *, reply_language: str) -> dict[str, object]:
+    payload = _extract_json_object(response_text)
+    if payload is None:
+        raise RuntimeError("vision_structured_response_not_json")
+    natural_answer = _normalize_vision_answer(str(payload.get("natural_answer") or "").strip())
+    if not natural_answer:
+        natural_answer = _default_natural_answer(reply_language)
+    person_detected = _normalize_enum(payload.get("person_detected"), {"yes", "no", "unknown"})
+    distance_band = _normalize_enum(payload.get("distance_band"), {"near", "mid", "far", "unknown"})
+    obstacle_near_arms = _normalize_enum(payload.get("obstacle_near_arms"), {"yes", "no", "unknown"})
+    free_space_front = _normalize_enum(payload.get("free_space_front"), {"clear", "partial", "blocked", "unknown"})
+    human_attention = _normalize_enum(payload.get("human_attention"), {"attending", "not_attending", "unknown"})
+    scene_visibility = _normalize_enum(payload.get("scene_visibility"), {"clear", "blurry", "occluded", "dark", "unknown"})
+    person_count_estimate = _normalize_person_count(payload.get("person_count_estimate"))
+    if person_detected == "no":
+        person_count_estimate = 0
+    return {
+        "natural_answer": natural_answer,
+        "person_detected": person_detected,
+        "person_count_estimate": person_count_estimate,
+        "distance_band": distance_band,
+        "obstacle_near_arms": obstacle_near_arms,
+        "free_space_front": free_space_front,
+        "human_attention": human_attention,
+        "scene_visibility": scene_visibility,
+    }
+
+
+def _extract_json_object(response_text: str) -> dict[str, object] | None:
+    text = (response_text or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    candidates.extend(fenced)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _normalize_enum(value: object, allowed: set[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in allowed else "unknown"
+
+
+def _normalize_person_count(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int):
+        return max(0, value)
+    text = str(value).strip().lower()
+    if not text or text in {"unknown", "null", "none", "n/a"}:
+        return None
+    if text.isdigit():
+        return max(0, int(text))
+    return None
+
+
+def _default_natural_answer(reply_language: str) -> str:
+    if reply_language == "zh-YUE":
+        return "我而家未能清楚判斷畫面內容。"
+    if reply_language == "en":
+        return "I can't clearly determine the scene right now."
+    return "我现在还无法清楚判断画面内容。"
+
+
+def _encode_image_file_base64(image_path: Path) -> str:
+    suffix = image_path.suffix.strip().lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise RuntimeError(f"unsupported_image_suffix:{suffix or 'empty'}")
+    return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
 def _capture_jpeg_base64(config: VisionChatConfig, device: str) -> str:
@@ -273,7 +504,9 @@ def _probe_camera(device: str) -> bool:
         cap.release()
 
 
-def _proxy_handler_for_gemini() -> urllib.request.ProxyHandler:
+def _proxy_handler_for_vision_backend(config: VisionChatConfig) -> urllib.request.ProxyHandler:
+    if config.provider != "gemini_openai_compat":
+        return urllib.request.ProxyHandler({})
     https_proxy = (
         os.getenv("HTTPS_PROXY", "").strip()
         or os.getenv("https_proxy", "").strip()
@@ -311,6 +544,11 @@ def _capture_with_external_python(config: VisionChatConfig) -> VisionChatResult:
     python_bin = _external_capture_python()
     if not python_bin:
         return VisionChatResult(ok=False, answer="", error="opencv_unavailable")
+    process_timeout_s = max(
+        10.0,
+        float(os.getenv("INTERRUPT_VISION_EXTERNAL_CAPTURE_TIMEOUT_S", "").strip() or 0.0),
+        config.capture_timeout_s + 8.0,
+    )
     script = r"""
 import base64, glob, json, os, sys, time
 import cv2
@@ -418,10 +656,30 @@ print(json.dumps({
             check=False,
             capture_output=True,
             text=True,
-            timeout=max(10.0, config.capture_timeout_s + 5.0),
+            timeout=process_timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        LOGGER.warning(
+            "external vision capture timed out: python=%s preferred_device=%s process_timeout_s=%.1f capture_timeout_s=%.1f error=%s",
+            python_bin,
+            config.preferred_device,
+            process_timeout_s,
+            config.capture_timeout_s,
+            exc,
+        )
+        return VisionChatResult(
+            ok=False,
+            answer="",
+            error="capture_timeout",
+            camera_device=config.preferred_device,
         )
     except Exception as exc:
-        LOGGER.warning("external vision capture failed to start: python=%s error=%s", python_bin, exc)
+        LOGGER.warning(
+            "external vision capture failed to start: python=%s preferred_device=%s error=%s",
+            python_bin,
+            config.preferred_device,
+            exc,
+        )
         return VisionChatResult(ok=False, answer="", error="opencv_unavailable")
 
     if result.returncode != 0:
