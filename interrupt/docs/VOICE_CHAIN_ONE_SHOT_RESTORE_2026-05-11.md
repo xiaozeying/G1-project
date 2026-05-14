@@ -123,6 +123,70 @@ speech_feedback.py
    - `OM1/.venv-g1`
 8. 重启前门并验证
 
+## 推荐恢复形态
+
+这套链路不建议强行做成“单容器包打天下”。
+
+原因：
+
+- 前门入口直接依赖 `systemd --user`
+- 音频强依赖 Pulse、USB 声卡枚举、`pactl` 默认 sink/source
+- 唤醒词链路依赖独立的 `wakeword-clean` Python 环境
+- 动作和灯光依赖机器人本机 `OM1/.venv-g1` 与 Unitree 侧运行环境
+
+因此当前更稳的方案是：
+
+- `interrupt/` 与恢复资产放在主仓
+- `OM1/`、`g1-wakeword/` 保持本机工作区
+- 用一键恢复脚本把环境、service 和关键资产恢复到位
+
+当前主仓已提供：
+
+```bash
+./prepare_robot_wipe_bundle.sh
+./package_robot_voice_assets.sh
+./backup_robot_voice_chain.sh
+./restore_robot_voice_chain.sh
+```
+
+建议顺序：
+
+1. 刷盘前先运行 `./prepare_robot_wipe_bundle.sh`
+2. 把生成的备份目录整体带走
+3. 刷盘后恢复代码
+4. 在机器人上运行 `./restore_robot_voice_chain.sh`
+
+脚本会自动尝试：
+
+- 总入口脚本会顺序调用：
+  - `package_robot_voice_assets.sh`
+  - `backup_robot_voice_chain.sh`
+- 关键资产打包脚本会导出：
+  - `om1-voice-assets.tar.gz`
+  - `g1-wakeword-assets.tar.gz`
+  - `asset-manifest.txt`
+- 备份脚本会导出 `.env.local`、service、三个 Python 环境 freeze、设备快照
+- 恢复 `interrupt/.env.local`
+- 如果工作区缺失，自动从打包产物恢复 `OM1/` 和 `g1-wakeword/` 的关键入口文件
+- 同步 `external_usb_tts.sh` 到 `OM1/scripts/`
+- 安装 `interrupt-frontgate.service`
+- 重建 `interrupt/.venv`
+- 检查或恢复 `wakeword-clean`
+- `systemctl --user restart interrupt-frontgate.service`
+
+恢复脚本还支持：
+
+```bash
+./prepare_robot_wipe_bundle.sh --verify-only
+./restore_robot_voice_chain.sh --verify-only
+./restore_robot_voice_chain.sh --skip-bootstrap
+```
+
+适用目标：
+
+- 刷盘后把机器人恢复到“开机后可直接唤醒”的状态
+- 避免现场再手动补 service、env、OM1 关键脚本和前门入口
+
 ## 迁移后最关键的环境变量
 
 至少确认这些值成立：

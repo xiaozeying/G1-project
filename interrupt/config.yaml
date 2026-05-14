@@ -65,8 +65,11 @@ feedback:
 
 vision:
   enabled: false
+  provider: gemini_openai_compat
+  api_key: ""
   model: gemini-2.5-flash
   base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  image_path: ""
   preferred_device: ""
   width: 640
   height: 480

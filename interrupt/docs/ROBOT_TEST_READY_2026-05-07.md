@@ -1,6 +1,6 @@
 # Robot Test Ready Checklist
 
-更新时间：2026-05-07
+更新时间：2026-05-11
 
 本文档用于刷机到 Ubuntu 22.04.5 后，快速确认 G1 前门主链已经进入“可测试”状态。
 
@@ -169,3 +169,46 @@ INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS=180000
 - `tools/check_env.py` 在机器人上如果没有同步最新脚本，可能仍会把前门工厂误报成 mock 默认值
 
 这些问题目前不会阻塞本轮语音主链验收。
+
+## 2026-05-11 修复记录
+
+本次联调已把“开机后直接唤醒可用”所需的关键修复固定到代码和机器人持久配置中。
+
+### 已修复
+
+- 修复前门拉房间时 `room-agent` readiness 过早误判的问题。
+  现已优先等待 `registered worker`，只在进程存活且超过保护窗口后才兜底放行，避免房间还没注册就提前 `dispatch`。
+- 修复 `room-agent` 启动过重、偶发注册不上的问题。
+  已将 LiveKit worker 默认空闲进程数调为 `0`，并放宽初始化超时，降低 G1 上的启动压力。
+- 修复房间对话阶段 assistant 双播的问题。
+  普通 assistant 回复已固定为只走 LiveKit 房间音频，不再额外走本地 `OM1` 镜像。
+- 修复粤语回复在 `transport_only` 下仍偷偷走本地 TTS 的特例。
+  现在粤语和中英文保持一致，只有在 `om1_mirror` 模式下才允许本地镜像播报。
+- 修复动作执行时工具确认话术与房间回复双声源互相抢话的问题。
+  工具确认播报也已切为只走 LiveKit 房间音频。
+
+### 当前固定配置
+
+机器人持久配置文件：
+
+```bash
+/home/unitree/HongTu/interrupt/.env.local
+```
+
+当前关键音频模式为：
+
+```bash
+INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only
+INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=transport_only
+```
+
+含义：
+
+- 房间内 assistant 正式回复只保留一条 LiveKit 房间音频
+- 动作/工具确认话术也只保留一条 LiveKit 房间音频
+- 正常开关机后仍沿用这套配置，无需再次手动修链路
+
+### 当前结论
+
+- 当前状态可以按“开机 -> 等服务起来 -> 直接说唤醒词”使用
+- 后续若未改动音频设备、`.env.local` 或相关代码，不需要重复本轮修复步骤

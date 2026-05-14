@@ -29,6 +29,7 @@ from src.navigation_intents import (
     looks_like_relative_motion_command,
     looks_like_saved_locations_query,
 )
+from src.safe_action_gateway import evaluate_action_safety, evaluate_navigation_safety
 from src.news import query_news
 from src.speech_feedback import SpeechFeedbackRouter
 from src.settings import load_settings
@@ -67,9 +68,11 @@ G1_ADAPTER = G1Om1Adapter()
 SPEECH_FEEDBACK = SpeechFeedbackRouter(SETTINGS.feedback, G1_ADAPTER)
 VISION_CHAT_CONFIG = VisionChatConfig(
     enabled=SETTINGS.vision.enabled,
-    api_key=SETTINGS.gemini_api_key,
+    provider=SETTINGS.vision.provider,
+    api_key=SETTINGS.vision.api_key,
     base_url=SETTINGS.vision.base_url,
     model=SETTINGS.vision.model,
+    image_path=SETTINGS.vision.image_path,
     preferred_device=SETTINGS.vision.preferred_device,
     width=SETTINGS.vision.width,
     height=SETTINGS.vision.height,
@@ -110,6 +113,10 @@ ENABLE_LOCAL_QUERY_PRE_ACK = os.getenv(
 ENABLE_PATCHED_JOB_TOKEN = os.getenv(
     "INTERRUPT_AGENT_PATCH_JOB_TOKEN",
     "1",
+).strip().lower() not in {"0", "false", "no", "off"}
+ENABLE_SAFE_ACTION_GATEWAY = os.getenv(
+    "INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY",
+    "0",
 ).strip().lower() not in {"0", "false", "no", "off"}
 LOCAL_TOOL_PRE_ACK_SUPPRESS_WINDOW_S = float(
     os.getenv("INTERRUPT_LOCAL_TOOL_PRE_ACK_SUPPRESS_WINDOW_S", "8.0").strip() or "8.0"
@@ -195,6 +202,17 @@ def _env_float(name: str) -> float | None:
         return float(raw)
     except ValueError:
         LOGGER.warning("invalid float env ignored: %s=%r", name, raw)
+        return None
+
+
+def _env_int(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        LOGGER.warning("invalid int env ignored: %s=%r", name, raw)
         return None
 
 
@@ -1060,6 +1078,31 @@ def _format_locations_reply(payload: dict[str, object]) -> str:
     )
 
 
+def _navigation_backend_unavailable_text() -> str:
+    return _localized_text(
+        "导航后端当前没有启动，我暂时还不能带你去已保存地点。",
+        "導航後端而家未啟動，我暫時未可以帶你去已儲存地點。",
+        "The navigation backend is not running right now, so I can't take you to a saved place yet.",
+    )
+
+
+def _navigation_request_failed_text(payload: dict[str, object] | None) -> str | None:
+    if not payload:
+        return None
+    if str(payload.get("error") or "").strip().lower() != "request_failed":
+        return None
+    detail = str(payload.get("detail") or "").strip().lower()
+    if not detail:
+        return _navigation_backend_unavailable_text()
+    if "localhost:5000" in detail or "127.0.0.1:5000" in detail or "connection refused" in detail:
+        return _navigation_backend_unavailable_text()
+    return _localized_text(
+        "导航请求这次没有成功发到机器人导航后端。",
+        "今次未能成功將導航請求發到機械人導航後端。",
+        "This navigation request did not reach the robot navigation backend successfully.",
+    )
+
+
 def _looks_like_weather_query(text: str) -> bool:
     normalized = (text or "").strip().lower()
     return any(token in normalized for token in ("天气", "天氣", "weather"))
@@ -1107,6 +1150,18 @@ def _vision_failure_text(error: str, *, device: str = "") -> str:
             "我找到相机了，但暂时没能抓到画面。",
             "我搵到相機，但暫時未能擷取畫面。",
             "I found the camera, but I couldn't capture a frame yet.",
+        )
+    if error == "capture_timeout":
+        if device:
+            return _localized_text(
+                f"我找到相机了，但这次从 {device} 抓图超时了。",
+                f"我搵到相機，但今次由 {device} 擷取畫面超時。",
+                f"I found the camera, but capturing a frame from {device} timed out this time.",
+            )
+        return _localized_text(
+            "我找到相机了，但这次抓图超时了。",
+            "我搵到相機，但今次擷取畫面超時。",
+            "I found the camera, but capturing a frame timed out this time.",
         )
     if error == "http_429":
         return _localized_text(
@@ -1187,12 +1242,28 @@ def _looks_like_vision_query(text: str) -> bool:
             "看到什么东西",
             "看到什麼東西",
             "睇到咩",
+            "睇到啲咩",
+            "睇到啲乜",
+            "見到啲咩",
+            "見到啲乜",
             "你看到什么",
             "你看到什麼",
             "你睇到咩",
+            "你睇到啲咩",
+            "你睇到啲乜",
             "你见到什么",
             "你見到什麼",
             "你見到咩",
+            "你見到啲咩",
+            "你見到啲乜",
+            "你而家睇到啲咩",
+            "你而家睇到啲乜",
+            "你而家見到啲咩",
+            "你而家見到啲乜",
+            "你依家睇到啲咩",
+            "你依家睇到啲乜",
+            "你依家見到啲咩",
+            "你依家見到啲乜",
             "前面是什么",
             "前面是什麼",
             "前面是什么东西",
@@ -1562,9 +1633,85 @@ async def _execute_led_color_local(color: str, *, source: str) -> str:
     return f"LED command failed: {result.stderr or result.stdout or result.returncode}"
 
 
+async def _evaluate_action_safety_local(action: str) -> tuple[bool, str]:
+    result = await asyncio.to_thread(
+        ask_camera_question,
+        VISION_CHAT_CONFIG,
+        question="请检查前方空间、人体接近情况，以及手臂活动范围附近是否有遮挡物。",
+        reply_language=REPLY_LANGUAGE_MANDARIN,
+        structured=True,
+    )
+    if not result.ok:
+        LOGGER.warning(
+            "safe action gateway vision precheck failed: action=%s error=%s device=%s",
+            action,
+            result.error,
+            result.camera_device,
+        )
+        return False, _localized_text(
+            "我现在拿不到可靠的前方安全观察结果，所以先不执行这个动作。",
+            "我而家攞唔到可靠嘅前方安全觀察結果，所以先唔做呢個動作。",
+            "I can't get a reliable safety observation right now, so I won't execute that action yet.",
+        )
+    decision = evaluate_action_safety(action, result.observation)
+    LOGGER.info(
+        "safe action gateway decision: action=%s allowed=%s code=%s observation=%r",
+        action,
+        decision.allowed,
+        decision.reason_code,
+        result.observation,
+    )
+    if decision.allowed:
+        return True, ""
+    return False, _localized_text(
+        decision.reason_text,
+        "基于而家嘅前方安全观察，我先唔执行呢个动作。",
+        "Based on the current safety observation, I won't execute that motion yet.",
+    )
+
+
+async def _evaluate_navigation_safety_local() -> tuple[bool, str]:
+    result = await asyncio.to_thread(
+        ask_camera_question,
+        VISION_CHAT_CONFIG,
+        question="请检查前方空间是否通畅、是否有人离得太近，以及当前画面是否足够清晰。",
+        reply_language=REPLY_LANGUAGE_MANDARIN,
+        structured=True,
+    )
+    if not result.ok:
+        LOGGER.warning(
+            "safe navigation gateway vision precheck failed: error=%s device=%s",
+            result.error,
+            result.camera_device,
+        )
+        return False, _localized_text(
+            "我现在拿不到可靠的前方导航安全观察结果，所以先不启动导航。",
+            "我而家攞唔到可靠嘅前方導航安全觀察結果，所以先唔啟動導航。",
+            "I can't get a reliable front navigation safety observation right now, so I won't start navigation yet.",
+        )
+    decision = evaluate_navigation_safety(result.observation)
+    LOGGER.info(
+        "safe navigation gateway decision: allowed=%s code=%s observation=%r",
+        decision.allowed,
+        decision.reason_code,
+        result.observation,
+    )
+    if decision.allowed:
+        return True, ""
+    return False, _localized_text(
+        decision.reason_text,
+        "基于而家嘅前方安全观察，我先唔启动导航。",
+        "Based on the current safety observation, I won't start navigation yet.",
+    )
+
+
 async def _execute_action_local(action: str, *, source: str) -> str:
     if not G1_ADAPTER.available:
         return "G1 action tool unavailable"
+    if ENABLE_SAFE_ACTION_GATEWAY:
+        allowed, denial_text = await _evaluate_action_safety_local(action)
+        if not allowed:
+            return denial_text
     _set_action_executing(True)
     try:
         _record_local_command_ack("action", action)
@@ -1630,6 +1777,9 @@ async def _list_saved_locations_local() -> str:
     payload = _parse_command_json(result.stdout)
     if result.ok and payload is not None:
         return _format_locations_reply(payload)
+    request_failed_text = _navigation_request_failed_text(payload)
+    if request_failed_text is not None:
+        return request_failed_text
     return _localized_text(
         "我暂时拿不到地点列表。",
         "我暫時拎唔到地點列表。",
@@ -1646,6 +1796,10 @@ async def _navigate_to_saved_location_local(location: str, *, source: str) -> st
             "導航工具而家未可用。",
             "Navigation tools are unavailable right now.",
         )
+    if ENABLE_SAFE_ACTION_GATEWAY:
+        allowed, denial_text = await _evaluate_navigation_safety_local()
+        if not allowed:
+            return denial_text
     await asyncio.to_thread(_speak_local_tool_ack, _navigation_ack_text(location))
     result = await asyncio.to_thread(G1_ADAPTER.navigate_to_location, location)
     LOGGER.info(
@@ -1671,6 +1825,9 @@ async def _navigate_to_saved_location_local(location: str, *, source: str) -> st
             f"而家前往{location}。",
             f"Heading to {location} now.",
         )
+    request_failed_text = _navigation_request_failed_text(payload)
+    if request_failed_text is not None:
+        return request_failed_text
     if payload and payload.get("error") == "location_not_found":
         return _format_locations_reply(payload)
     return _localized_text(
@@ -1834,6 +1991,76 @@ class InterruptAssistant(Agent):
             )
             return f"ignored mismatched action intent for {normalized_action}"
         return await _execute_action_local(normalized_action, source="tool")
+
+    @function_tool(
+        name="check_action_safety",
+        description="Check whether a body action is currently safe using the front-camera observation.",
+    )
+    async def check_action_safety(self, action: str) -> str:
+        normalized_action = _normalize_body_action(action)
+        result = await asyncio.to_thread(
+            ask_camera_question,
+            VISION_CHAT_CONFIG,
+            question="请检查前方空间、人体接近情况，以及手臂活动范围附近是否有遮挡物。",
+            reply_language=REPLY_LANGUAGE_MANDARIN,
+            structured=True,
+        )
+        if not result.ok:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": result.error,
+                    "camera_device": result.camera_device,
+                },
+                ensure_ascii=False,
+            )
+        decision = evaluate_action_safety(normalized_action, result.observation)
+        return json.dumps(
+            {
+                "ok": True,
+                "action": normalized_action,
+                "allowed": decision.allowed,
+                "reason_code": decision.reason_code,
+                "reason_text": decision.reason_text,
+                "observation": result.observation,
+                "camera_device": result.camera_device,
+            },
+            ensure_ascii=False,
+        )
+
+    @function_tool(
+        name="check_navigation_safety",
+        description="Check whether it is currently safe to start navigation using the front-camera observation.",
+    )
+    async def check_navigation_safety(self) -> str:
+        result = await asyncio.to_thread(
+            ask_camera_question,
+            VISION_CHAT_CONFIG,
+            question="请检查前方空间是否通畅、是否有人离得太近，以及当前画面是否足够清晰。",
+            reply_language=REPLY_LANGUAGE_MANDARIN,
+            structured=True,
+        )
+        if not result.ok:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": result.error,
+                    "camera_device": result.camera_device,
+                },
+                ensure_ascii=False,
+            )
+        decision = evaluate_navigation_safety(result.observation)
+        return json.dumps(
+            {
+                "ok": True,
+                "allowed": decision.allowed,
+                "reason_code": decision.reason_code,
+                "reason_text": decision.reason_text,
+                "observation": result.observation,
+                "camera_device": result.camera_device,
+            },
+            ensure_ascii=False,
+        )
 
     @function_tool(
         name="execute_robot_command_text",
@@ -2078,6 +2305,71 @@ class InterruptAssistant(Agent):
         )
         return result.answer
 
+    @function_tool(
+        name="observe_camera_scene",
+        description=(
+            "Inspect the robot's current front camera view and return a structured JSON observation "
+            "for safety-aware reasoning."
+        ),
+    )
+    async def observe_camera_scene(self, question: str = "") -> str:
+        if not SETTINGS.vision.enabled:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "vision_disabled",
+                },
+                ensure_ascii=False,
+            )
+        if not _is_vision_query_valid(question):
+            latest_text, _ = _latest_user_text()
+            LOGGER.warning(
+                "reject structured vision tool execution due to mismatched vision intent: question=%r latest_user_text=%r",
+                question,
+                latest_text,
+            )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "vision_intent_mismatch",
+                },
+                ensure_ascii=False,
+            )
+        result = await asyncio.to_thread(
+            ask_camera_question,
+            VISION_CHAT_CONFIG,
+            question=question,
+            reply_language=_preferred_reply_language(),
+            structured=True,
+        )
+        if not result.ok:
+            LOGGER.warning(
+                "structured camera observation failed: question=%r error=%s device=%s",
+                question,
+                result.error,
+                result.camera_device,
+            )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": result.error,
+                    "camera_device": result.camera_device,
+                },
+                ensure_ascii=False,
+            )
+        payload = {
+            "ok": True,
+            "camera_device": result.camera_device,
+            "observation": result.observation or {},
+        }
+        LOGGER.info(
+            "structured camera observation succeeded: question=%r device=%s observation=%r",
+            question,
+            result.camera_device,
+            payload["observation"],
+        )
+        return json.dumps(payload, ensure_ascii=False)
+
 def _effective_instructions() -> str:
     ack = SETTINGS.agent.interruption_acknowledgement.strip()
     extra = (
@@ -2100,12 +2392,13 @@ def _effective_instructions() -> str:
             "4. 用户询问天气时，优先调用 get_weather 获取实时天气，不要假装已经联网成功。\n"
             "5. 用户询问新闻、热点新闻、科技新闻等时，优先调用 get_news 获取最新新闻，不要直接说拿不到。\n"
             "6. 当用户明确询问你看到了什么、前面有什么、某个物体/人是否在画面里、帮他看看眼前场景时，优先调用 ask_camera_vision。\n"
-            "7. 视觉工具只回答画面中能直接看到的内容；如果当前没有视觉能力或画面不清楚，要诚实说明。\n"
-            "8. 当用户问有哪些已保存地点、可以去哪里时，优先调用 list_saved_locations。\n"
-            "9. 当用户明确说“带我去某地 / 去某地 / navigate to 某地”时，优先调用 navigate_to_saved_location，参数只填地点名。\n"
-            "10. 当用户明确说“记住这里是某地 / save this location as ...”时，优先调用 remember_current_location。\n"
-            "11. 不要把“往前走几步、后退一点、转个圈、左转右转”这类相对运动命令错误映射成地点导航；当前这类命令只能如实说明暂不支持。\n"
-            "12. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
+            "7. 当你需要为安全判断、空间判断、障碍判断提供结构化结果时，优先调用 observe_camera_scene。\n"
+            "8. 视觉工具只回答画面中能直接看到的内容；如果当前没有视觉能力或画面不清楚，要诚实说明。\n"
+            "9. 当用户问有哪些已保存地点、可以去哪里时，优先调用 list_saved_locations。\n"
+            "10. 当用户明确说“带我去某地 / 去某地 / navigate to 某地”时，优先调用 navigate_to_saved_location，参数只填地点名。\n"
+            "11. 当用户明确说“记住这里是某地 / save this location as ...”时，优先调用 remember_current_location。\n"
+            "12. 不要把“往前走几步、后退一点、转个圈、左转右转”这类相对运动命令错误映射成地点导航；当前这类命令只能如实说明暂不支持。\n"
+            "13. 工具执行成功后，用一句简短确认告知用户已经开始执行或已经完成，并保持和用户当前语言一致。\n"
         )
     return SETTINGS.agent.instructions.rstrip() + extra + tool_extra
 
@@ -2161,6 +2454,8 @@ def _build_realtime_input_config() -> google_types.RealtimeInputConfig:
 
 
 def _build_session() -> AgentSession:
+    if not SETTINGS.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
     mcp_servers = build_mcp_servers(SETTINGS)
     if not mcp_servers:
         LOGGER.warning("未配置可用 MCP/HTTP 实时工具；天气走本地接口，新闻走 RSS 直连，其他外部实时数据能力有限。")
@@ -2554,6 +2849,14 @@ _server_kwargs = {
     "api_key": SETTINGS.livekit.api_key,
     "api_secret": SETTINGS.livekit.api_secret,
     "http_proxy": _livekit_proxy(),
+    # Keep robot-side worker bootstrap light. The embedded box does not benefit
+    # from prewarming multiple idle job processes before it has even registered
+    # with LiveKit, and that startup cost can delay or derail frontgate handoff.
+    "num_idle_processes": max(0, _env_int("INTERRUPT_AGENT_NUM_IDLE_PROCESSES") or 0),
+    "initialize_process_timeout": max(
+        10.0,
+        _env_float("INTERRUPT_AGENT_INITIALIZE_PROCESS_TIMEOUT_S") or 30.0,
+    ),
 }
 
 _load_threshold_override = _env_float("INTERRUPT_AGENT_LOAD_THRESHOLD")

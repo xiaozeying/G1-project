@@ -21,7 +21,9 @@ TARGET_SAMPLE_RATE = 24000
 TARGET_FRAME_SAMPLES = 240
 PLAYBACK_ACTIVE_RMS_THRESHOLD = 400.0
 MIC_PLAYBACK_DUCK_HOLD_S = 0.9
-PLAYBACK_PREBUFFER_MS = int(os.getenv("INTERRUPT_RTC_PLAYBACK_PREBUFFER_MS", "80").strip() or "80")
+PLAYBACK_PREBUFFER_MS = int(os.getenv("INTERRUPT_RTC_PLAYBACK_PREBUFFER_MS", "220").strip() or "220")
+PLAYBACK_BLOCKSIZE_MS = int(os.getenv("INTERRUPT_RTC_PLAYBACK_BLOCKSIZE_MS", "20").strip() or "20")
+PLAYBACK_REBUFFER_MS = int(os.getenv("INTERRUPT_RTC_PLAYBACK_REBUFFER_MS", "120").strip() or "120")
 MIC_BARGE_IN_MIN_RMS = 1800.0
 MIC_BARGE_IN_PLAYBACK_RATIO = 0.65
 MIC_BARGE_IN_OPEN_HOLD_S = 0.8
@@ -190,9 +192,11 @@ class OutputPlayback:
         self._last_level_log_at = 0.0
         self._prebuffering = True
         self._prebuffer_bytes = 0
+        self._rebuffer_bytes = 0
         self._last_active_audio_at = 0.0
         self._last_active_rms = 0.0
         self._output_delay_s = 0.0
+        self._last_buffer_warning_at = 0.0
 
     def start(self) -> None:
         import sounddevice as sd
@@ -200,26 +204,36 @@ class OutputPlayback:
         self._device, device_info = _resolve_audio_device(self._device, kind="output")
         self._sample_rate = int(round(float(device_info.get("default_samplerate", TARGET_SAMPLE_RATE))))
         self._channels = max(1, min(int(device_info.get("max_output_channels", 1) or 1), 2))
+        blocksize = max(
+            TARGET_FRAME_SAMPLES,
+            int(self._sample_rate * (PLAYBACK_BLOCKSIZE_MS / 1000.0)),
+        )
         self._stream = sd.OutputStream(
             callback=self._callback,
             dtype="int16",
             channels=self._channels,
             device=self._device,
             samplerate=self._sample_rate,
-            blocksize=max(TARGET_FRAME_SAMPLES, self._sample_rate // 100),
+            blocksize=blocksize,
         )
         self._stream.start()
         self._prebuffer_bytes = max(
             int(self._sample_rate * 2 * (PLAYBACK_PREBUFFER_MS / 1000.0)),
             TARGET_FRAME_SAMPLES * 4,
         )
+        self._rebuffer_bytes = max(
+            int(self._sample_rate * 2 * (PLAYBACK_REBUFFER_MS / 1000.0)),
+            TARGET_FRAME_SAMPLES * 2,
+        )
         self._prebuffering = True
         LOGGER.info(
-            "RTC endpoint output started: device=%s sr=%s channels=%s prebuffer_bytes=%s",
+            "RTC endpoint output started: device=%s sr=%s channels=%s blocksize=%s prebuffer_bytes=%s rebuffer_bytes=%s",
             device_info.get("name", self._device or "default"),
             self._sample_rate,
             self._channels,
+            blocksize,
             self._prebuffer_bytes,
+            self._rebuffer_bytes,
         )
 
     def close(self) -> None:
@@ -274,14 +288,34 @@ class OutputPlayback:
     def output_delay_s(self) -> float:
         return self._output_delay_s
 
-    def _callback(self, outdata: np.ndarray, frames: int, time_info: object = None, *_: object) -> None:
+    def _callback(
+        self,
+        outdata: np.ndarray,
+        frames: int,
+        time_info: object = None,
+        status: object = None,
+    ) -> None:
         current_time = getattr(time_info, "currentTime", None)
         output_time = getattr(time_info, "outputBufferDacTime", None)
         if current_time is not None and output_time is not None:
             self._output_delay_s = max(0.0, float(output_time) - float(current_time))
         bytes_needed = frames * 2
         with self._lock:
-            if self._prebuffering and len(self._buffer) < self._prebuffer_bytes:
+            if getattr(status, "output_underflow", False):
+                self._prebuffering = True
+            if not self._prebuffering and len(self._buffer) < bytes_needed:
+                self._prebuffering = True
+                now = time.monotonic()
+                if now - self._last_buffer_warning_at >= 2.0:
+                    LOGGER.warning(
+                        "RTC output buffer underrun: available_bytes=%s required_bytes=%s rebuffer_bytes=%s",
+                        len(self._buffer),
+                        bytes_needed,
+                        self._rebuffer_bytes,
+                    )
+                    self._last_buffer_warning_at = now
+            buffer_target = self._prebuffer_bytes if self._last_active_audio_at == 0.0 else self._rebuffer_bytes
+            if self._prebuffering and len(self._buffer) < buffer_target:
                 outdata[:] = 0
                 return
             self._prebuffering = False

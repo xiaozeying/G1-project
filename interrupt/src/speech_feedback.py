@@ -88,7 +88,7 @@ class SpeechFeedbackRouter:
         normalized = normalize_tts_text(text)
         if not normalized:
             return False
-        if language == "zh-YUE" and self._cantonese_tts.enabled and mode != MODE_DISABLED:
+        if language == "zh-YUE" and self._cantonese_tts.enabled and mode == MODE_OM1_MIRROR:
             try:
                 if self._cantonese_tts.synthesize_and_play(normalized):
                     LOGGER.info(

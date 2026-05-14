@@ -225,6 +225,8 @@ async def _wait_for_managed_process_readiness(
     *,
     room_agent_started: bool,
     rtc_endpoint_started: bool,
+    room_agent_proc: subprocess.Popen[bytes] | None,
+    rtc_endpoint_proc: subprocess.Popen[bytes] | None,
     room_agent_offset: int,
     rtc_offset: int,
     timeout_s: float,
@@ -232,37 +234,57 @@ async def _wait_for_managed_process_readiness(
 ) -> bool:
     room_agent_log = ROOT_DIR / "logs" / "room-agent.log"
     rtc_log = ROOT_DIR / "logs" / "robot-rtc-endpoint.log"
+    room_agent_alive_fallback_after_s = float(
+        os.getenv("INTERRUPT_FRONTGATE_ROOM_AGENT_ALIVE_READY_AFTER_S", "8").strip() or "8"
+    )
 
     # Let newly started processes write their run headers before we begin polling.
     await asyncio.sleep(min(0.3, max(0.0, poll_s)))
+    wait_started_at = time.monotonic()
     deadline = time.monotonic() + max(0.2, timeout_s)
     room_agent_ready = not room_agent_started
     rtc_ready = not rtc_endpoint_started
     while time.monotonic() < deadline:
         if room_agent_started and not room_agent_ready:
-            room_agent_ready = _log_contains_since(
-                room_agent_log,
-                "registered worker",
-                room_agent_offset,
-            )
+            if room_agent_proc is not None and room_agent_proc.poll() is not None:
+                room_agent_ready = False
+            else:
+                room_agent_ready = _log_contains_since(
+                    room_agent_log,
+                    "registered worker",
+                    room_agent_offset,
+                )
+                if not room_agent_ready and room_agent_proc is not None:
+                    elapsed = time.monotonic() - wait_started_at
+                    # Prefer the explicit worker registration log so dispatch
+                    # happens after LiveKit can actually assign jobs. Only fall
+                    # back to a live process after a grace window in case INFO
+                    # logs are delayed or suppressed on the robot.
+                    room_agent_ready = (
+                        room_agent_proc.poll() is None
+                        and elapsed >= max(0.0, room_agent_alive_fallback_after_s)
+                    )
         if rtc_endpoint_started and not rtc_ready:
-            rtc_ready = (
-                _log_contains_since(
-                    rtc_log,
-                    "RTC endpoint connected:",
-                    rtc_offset,
+            if rtc_endpoint_proc is not None and rtc_endpoint_proc.poll() is not None:
+                rtc_ready = False
+            else:
+                rtc_ready = (
+                    _log_contains_since(
+                        rtc_log,
+                        "RTC endpoint connected:",
+                        rtc_offset,
+                    )
+                    or _log_contains_since(
+                        rtc_log,
+                        "RTC endpoint bootstrap:",
+                        rtc_offset,
+                    )
+                    or _log_contains_since(
+                        rtc_log,
+                        "RTC endpoint microphone started:",
+                        rtc_offset,
+                    )
                 )
-                or _log_contains_since(
-                    rtc_log,
-                    "RTC endpoint bootstrap:",
-                    rtc_offset,
-                )
-                or _log_contains_since(
-                    rtc_log,
-                    "RTC endpoint microphone started:",
-                    rtc_offset,
-                )
-            )
         if room_agent_ready and rtc_ready:
             print(
                 f"[FrontGateRoom] managed readiness room-agent={room_agent_ready} rtc-endpoint={rtc_ready}",
@@ -316,6 +338,8 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         room_agent_started = False
         rtc_endpoint_started = False
+        room_agent_proc: subprocess.Popen[bytes] | None = None
+        rtc_endpoint_proc: subprocess.Popen[bytes] | None = None
         room_agent_offset = _log_size(ROOT_DIR / "logs" / "room-agent.log")
         rtc_offset = _log_size(ROOT_DIR / "logs" / "robot-rtc-endpoint.log")
         if _env_flag("INTERRUPT_FRONTGATE_ENSURE_ROOM_AGENT", True):
@@ -327,6 +351,7 @@ async def _run(args: argparse.Namespace) -> int:
             if proc is not None:
                 started_processes.append(("room-agent", proc))
                 room_agent_started = True
+                room_agent_proc = proc
         if _env_flag("INTERRUPT_FRONTGATE_ENSURE_RTC_ENDPOINT", True):
             proc = _ensure_process_running(
                 "rtc-endpoint",
@@ -336,6 +361,7 @@ async def _run(args: argparse.Namespace) -> int:
             if proc is not None:
                 started_processes.append(("rtc-endpoint", proc))
                 rtc_endpoint_started = True
+                rtc_endpoint_proc = proc
 
         pre_dispatch_delay_s = max(0.0, args.pre_dispatch_delay)
         if pre_dispatch_delay_s > 0 and started_processes:
@@ -348,6 +374,8 @@ async def _run(args: argparse.Namespace) -> int:
             ready = await _wait_for_managed_process_readiness(
                 room_agent_started=room_agent_started,
                 rtc_endpoint_started=rtc_endpoint_started,
+                room_agent_proc=room_agent_proc,
+                rtc_endpoint_proc=rtc_endpoint_proc,
                 room_agent_offset=room_agent_offset,
                 rtc_offset=rtc_offset,
                 timeout_s=max(2.0, args.startup_timeout),

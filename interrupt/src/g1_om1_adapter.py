@@ -86,6 +86,7 @@ class G1Om1AdapterConfig:
     direct_command_script: str
     feedback_script: str
     speak_script: str
+    navigation_provider: str
     navigation_script: str
     navigation_base_url: str
     navigation_timeout_s: float
@@ -111,9 +112,18 @@ class G1Om1AdapterConfig:
             "INTERRUPT_G1_SPEAK_SCRIPT",
             "",
         ).strip()
+        navigation_provider = (
+            os.getenv("INTERRUPT_G1_NAV_PROVIDER", "http_bridge").strip().lower()
+            or "http_bridge"
+        )
+        default_navigation_script = (
+            om1_root / "scripts" / "g1_nav_goal_pose.py"
+            if navigation_provider == "ros2_goal_pose"
+            else om1_root / "scripts" / "g1_nav_command.py"
+        )
         navigation_script = os.getenv(
             "INTERRUPT_G1_NAVIGATION_SCRIPT",
-            str(om1_root / "scripts" / "g1_nav_command.py"),
+            str(default_navigation_script),
         ).strip()
         navigation_base_url = (
             os.getenv("INTERRUPT_G1_NAV_BASE_URL", "http://localhost:5000").strip()
@@ -134,6 +144,7 @@ class G1Om1AdapterConfig:
             direct_command_script=direct_command_script,
             feedback_script=feedback_script,
             speak_script=speak_script,
+            navigation_provider=navigation_provider,
             navigation_script=navigation_script,
             navigation_base_url=navigation_base_url,
             navigation_timeout_s=navigation_timeout_s,
@@ -298,6 +309,7 @@ class G1Om1Adapter:
             "direct_command_script": self.config.direct_command_script,
             "feedback_script": self.config.feedback_script,
             "speak_script": self.config.speak_script,
+            "navigation_provider": self.config.navigation_provider,
             "navigation_script": self.config.navigation_script,
             "navigation_base_url": self.config.navigation_base_url,
             "navigation_timeout_s": str(self.config.navigation_timeout_s),
