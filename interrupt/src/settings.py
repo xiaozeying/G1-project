@@ -23,6 +23,9 @@ class LiveKitConfig:
 @dataclass
 class AgentConfig:
     name: str
+    backend: str
+    runtime_mode: str
+    local_text_decision_mode: str
     model: str
     voice: str
     language: str
@@ -38,6 +41,9 @@ class AgentConfig:
     false_interruption_timeout_ms: int
     aec_warmup_duration_ms: int
     user_away_timeout_ms: int
+    local_text_provider: str
+    local_text_base_url: str
+    local_text_model: str
 
 
 @dataclass
@@ -180,6 +186,64 @@ def _normalize_vision_provider(value: object) -> str:
     return alias_map.get(normalized, normalized or "gemini_openai_compat")
 
 
+def _normalize_agent_backend(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    alias_map = {
+        "": "gemini_realtime",
+        "gemini": "gemini_realtime",
+        "gemini_realtime": "gemini_realtime",
+        "google_realtime": "gemini_realtime",
+        "local_text": "local_text_ollama",
+        "local_text_ollama": "local_text_ollama",
+        "ollama_text": "local_text_ollama",
+        "offline_text": "local_text_ollama",
+    }
+    return alias_map.get(normalized, normalized or "gemini_realtime")
+
+
+def _normalize_agent_runtime_mode(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    alias_map = {
+        "": "online_full",
+        "online": "online_full",
+        "online_full": "online_full",
+        "full": "online_full",
+        "default": "online_full",
+        "offline": "offline_singlebox",
+        "offline_singlebox": "offline_singlebox",
+        "singlebox": "offline_singlebox",
+        "local_only": "offline_singlebox",
+        "degraded": "offline_singlebox",
+    }
+    return alias_map.get(normalized, normalized or "online_full")
+
+
+def _normalize_local_text_decision_mode(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    alias_map = {
+        "": "disabled",
+        "off": "disabled",
+        "false": "disabled",
+        "0": "disabled",
+        "disabled": "disabled",
+        "shadow": "shadow",
+        "observe": "shadow",
+        "log_only": "shadow",
+        "prefer": "prefer_tools",
+        "prefer_tools": "prefer_tools",
+        "tool_first": "prefer_tools",
+        "local_first": "prefer_tools",
+        "prefer_all": "prefer_all",
+        "all": "prefer_all",
+        "reply_first": "prefer_all",
+        "full": "prefer_all",
+        "1": "prefer_tools",
+        "true": "prefer_tools",
+        "on": "prefer_tools",
+    }
+    return alias_map.get(normalized, normalized or "disabled")
+
+
 def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSettings:
     load_environment()
     path = Path(config_path) if config_path else _root_dir() / "config.yaml"
@@ -234,9 +298,10 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
             raw.get("vision", {}).get("provider", "gemini_openai_compat"),
         )
     )
+    configured_vision_api_key = str(raw.get("vision", {}).get("api_key", "") or gemini_api_key)
     vision_api_key = os.getenv(
         "INTERRUPT_VLM_API_KEY",
-        raw.get("vision", {}).get("api_key", gemini_api_key),
+        configured_vision_api_key,
     ).strip()
 
     return AppSettings(
@@ -247,6 +312,24 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
         ),
         agent=AgentConfig(
             name=agent.get("name", "interrupt-web-agent"),
+            backend=_normalize_agent_backend(
+                os.getenv(
+                    "INTERRUPT_AGENT_BACKEND",
+                    agent.get("backend", "gemini_realtime"),
+                )
+            ),
+            runtime_mode=_normalize_agent_runtime_mode(
+                os.getenv(
+                    "INTERRUPT_AGENT_RUNTIME_MODE",
+                    agent.get("runtime_mode", "online_full"),
+                )
+            ),
+            local_text_decision_mode=_normalize_local_text_decision_mode(
+                os.getenv(
+                    "INTERRUPT_AGENT_LOCAL_TEXT_DECISION_MODE",
+                    agent.get("local_text_decision_mode", "disabled"),
+                )
+            ),
             model=agent.get("model", "gemini-2.5-flash-native-audio-preview-12-2025"),
             voice=agent.get("voice", "Aoede"),
             language=agent.get("language", "zh-CN"),
@@ -293,6 +376,21 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
                     str(agent.get("user_away_timeout_ms", 15000)),
                 )
             ),
+            local_text_provider=os.getenv(
+                "INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER",
+                str(agent.get("local_text_provider", "ollama")),
+            ).strip()
+            or "ollama",
+            local_text_base_url=os.getenv(
+                "INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL",
+                str(agent.get("local_text_base_url", "http://127.0.0.1:11434")),
+            ).strip()
+            or "http://127.0.0.1:11434",
+            local_text_model=os.getenv(
+                "INTERRUPT_AGENT_LOCAL_TEXT_MODEL",
+                str(agent.get("local_text_model", "qwen2.5:7b")),
+            ).strip()
+            or "qwen2.5:7b",
         ),
         web=WebConfig(
             host=web.get("host", "127.0.0.1"),

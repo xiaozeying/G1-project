@@ -1,0 +1,4 @@
+run_id,model_name,phase,case_id,input_text,request_success,intent_correct,schema_valid,semantic_correct,invalid_action,interrupt_test,interrupt_recovered,first_response_latency_ms,full_turn_latency_ms,cpu_percent,gpu_percent,ram_mb,vram_mb,temperature_c,raw_output,notes,final_case_result
+sample_run,gemma4,phase1,C01,你是谁,,,,,,,,,,,,,,,,,
+sample_run,gemma4,phase1,C02,你能做什么,,,,,,,,,,,,,,,,,
+sample_run,gemma4,phase1,C03,挥挥手,,,,,,,,,,,,,,,,,

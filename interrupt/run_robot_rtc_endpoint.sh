@@ -43,6 +43,9 @@ load_env_defaults() {
 load_env_defaults "${ROOT_DIR}/.env.local"
 load_env_defaults "${ROOT_DIR}/.env"
 
+RESOLVED_VLM_ENV="$("${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/tools/resolve_vlm_runtime.py" --mode robot --allow-online-fallback)"
+eval "${RESOLVED_VLM_ENV}"
+
 export INTERRUPT_RTC_ENDPOINT_ENABLED="${INTERRUPT_RTC_ENDPOINT_ENABLED:-1}"
 export INTERRUPT_RTC_ROOM_NAME="${INTERRUPT_RTC_ROOM_NAME:-interrupt-demo}"
 export INTERRUPT_RTC_IDENTITY="${INTERRUPT_RTC_IDENTITY:-robot-rtc-endpoint}"
@@ -70,6 +73,11 @@ echo "rtc subscribe audio: ${INTERRUPT_RTC_SUBSCRIBE_AUDIO:-1}"
 echo "rtc auto redispatch on agent disconnect: ${INTERRUPT_RTC_AUTO_REDISPATCH_ON_AGENT_DISCONNECT:-1}"
 echo "rtc redispatch cooldown s: ${INTERRUPT_RTC_REDISPATCH_COOLDOWN_S:-8}"
 echo "rtc agent absence check interval s: ${INTERRUPT_RTC_AGENT_ABSENCE_CHECK_INTERVAL_S:-20}"
+echo "resolved VLM source: ${INTERRUPT_VLM_RESOLVED_SOURCE:-unset}"
+echo "resolved VLM reason: ${INTERRUPT_VLM_RESOLVED_REASON:-unset}"
+echo "resolved VLM provider: ${INTERRUPT_VLM_PROVIDER:-unset}"
+echo "resolved VLM base_url: ${INTERRUPT_VLM_BASE_URL:-unset}"
+echo "resolved VLM model: ${INTERRUPT_VLM_MODEL:-unset}"
 export INTERRUPT_RTC_INPUT_DEVICE="${INTERRUPT_RTC_INPUT_DEVICE:-plughw:CARD=audio,DEV=0}"
 
 echo "rtc input device: ${INTERRUPT_RTC_INPUT_DEVICE}"

@@ -5,6 +5,9 @@ livekit:
 
 agent:
   name: interrupt-web-agent
+  backend: gemini_realtime
+  runtime_mode: online_full
+  local_text_decision_mode: disabled
   model: gemini-2.5-flash-native-audio-preview-12-2025
   voice: Aoede
   language: ""
@@ -26,6 +29,9 @@ agent:
   false_interruption_timeout_ms: 500
   aec_warmup_duration_ms: 0
   user_away_timeout_ms: 300000
+  local_text_provider: ollama
+  local_text_base_url: http://127.0.0.1:11434
+  local_text_model: qwen2.5:7b
 
 console:
   input_device: ""

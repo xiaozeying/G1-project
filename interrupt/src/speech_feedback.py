@@ -7,6 +7,7 @@ from typing import Callable
 from src.cantonese_tts import EdgeCantoneseTts, load_cantonese_tts_config
 from src.g1_om1_adapter import G1Om1Adapter
 from src.settings import FeedbackConfig
+from src.speech_loop_guard import note_local_playback
 
 
 LOGGER = logging.getLogger("interrupt.speech_feedback")
@@ -91,6 +92,7 @@ class SpeechFeedbackRouter:
         if language == "zh-YUE" and self._cantonese_tts.enabled and mode == MODE_OM1_MIRROR:
             try:
                 if self._cantonese_tts.synthesize_and_play(normalized):
+                    note_local_playback(normalized, language=language)
                     LOGGER.info(
                         "专用粤语 TTS 播报成功: mode=%s text=%r",
                         mode,
@@ -113,6 +115,7 @@ class SpeechFeedbackRouter:
             return False
         result = self._adapter.speak(normalized)
         if result.ok:
+            note_local_playback(normalized, language=language)
             LOGGER.info("%s: text=%r", success_log, normalized)
             return True
         LOGGER.warning(

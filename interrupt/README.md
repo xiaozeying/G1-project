@@ -1,572 +1,111 @@
-# interrupt
+# RAI
 
-## 当前推荐启动方式
+RAI is a flexible AI agent framework to develop and deploy Embodied AI features for your robots.
 
-针对 G1 真机，当前唯一推荐的主启动路径是：
+📚 Visit [robotecai.github.io/rai](https://robotecai.github.io/rai/) for the latest documentation, setup
+guide and tutorials. 📚
 
-```bash
-systemctl --user restart interrupt-frontgate.service
+---
+
+<div align="center">
+
+![rai-image](./docs/imgs/RAI_simple_diagram_medium.png)
+
+---
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+![GitHub Release](https://img.shields.io/github/v/release/RobotecAI/rai)
+![Contributors](https://img.shields.io/github/contributors/robotecai/rai)
+[![codecov](https://codecov.io/gh/RobotecAI/rai/graph/badge.svg?token=4EP49Q8GDG)](https://codecov.io/gh/RobotecAI/rai)
+[![arXiv](https://img.shields.io/badge/arXiv-2505.07532-b31b1b.svg)](https://arxiv.org/abs/2505.07532)
+
+![Static Badge](https://img.shields.io/badge/Ubuntu-24.04-orange)
+![Static Badge](https://img.shields.io/badge/Ubuntu-22.04-orange)
+![Static Badge](https://img.shields.io/badge/Python-3.12-blue)
+![Static Badge](https://img.shields.io/badge/Python-3.10-blue)
+![Static Badge](https://img.shields.io/badge/ROS2-jazzy-blue)
+![Static Badge](https://img.shields.io/badge/ROS2-humble-blue)
+
+[![](https://dcbadge.limes.pink/api/server/https://discord.gg/3PGHgTaJSB)](https://discord.gg/3PGHgTaJSB)
+
+</div>
+
+---
+
+## 🎯 Overview
+
+| Category                       | Description                                       | Features                                                                                                                                                           |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 🤖 **Multi-Agent Systems**     | Empowering robotics with advanced AI capabilities | • Seamlessly integrate Gen AI capabilities into your robots<br>• Enable sophisticated agent-based architectures                                                    |
+| 🔄 **Robot Intelligence**      | Enhancing robotic systems with smart features     | • Add natural human-robot interaction capabilities<br>• Bring flexible problem-solving to your existing stack<br>• Provide ready-to-use AI features out of the box |
+| 🌟 **Multi-Modal Interaction** | Supporting diverse interaction capabilities       | • Handle diverse data types natively<br>• Enable rich sensory integration<br>• Process multiple input/output modalities simultaneously                             |
+
+## RAI framework
+
+-   [x] rai core: Core functionality for multi-agent system, human-robot interaction and
+        multi-modalities.
+-   [x] rai whoami: Tool to extract and synthesize robot embodiment information from a structured
+        directory of documentation, images, and URDFs.
+-   [x] rai_asr: Speech-to-text models and tools.
+-   [x] rai_tts: Text-to-speech models and tools.
+-   [x] rai_sim: Package for connecting RAI to simulation environments.
+-   [x] rai_bench: Benchmarking suite for RAI. Test agents, models, tools, simulators, etc.
+-   [x] rai_perception: Object detection tools based on open-set models and machine learning techniques.
+-   [x] rai_nomad: Integration with NoMaD for navigation.
+-   [ ] rai_finetune: Finetune LLMs on your embodied data.
+
+### Getting started
+
+See [Quick setup guide](https://robotecai.github.io/rai/setup/install).
+
+### Simulation demos
+
+Try RAI yourself with these demos:
+| Application | Robot | Description | Docs Link |
+| ------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| Mission and obstacle reasoning in orchards | Autonomous tractor | In a beautiful scene of a virtual orchard, RAI goes beyond obstacle detection to analyze best course of action for a given unexpected situation. | [link](https://robotecai.github.io/rai/demos/agriculture/) |
+| Manipulation tasks with natural language | Robot Arm (Franka Panda) | Complete flexible manipulation tasks thanks to RAI and Grounded SAM 2 | [link](https://robotecai.github.io/rai/demos/manipulation/) |
+| Autonomous mobile robot demo | Husarion ROSbot XL | Demonstrate RAI's interaction with an autonomous mobile robot platform for navigation and control | [link](https://robotecai.github.io/rai/demos/rosbot_xl/) |
+| Agentic mobile manipulator | RB-KAIROS | A comprehensive demo with on-board execution | [link](https://github.com/RobotecAI/agentic-mobile-manipulator) |
+
+## Community
+
+### Embodied AI Community Group
+
+RAI is one of the main projects in focus of the
+[Embodied AI Community Group](https://github.com/ros-wg-embodied-ai). If you would like to join the
+next meeting, look for it in the
+[ROS Community Calendar](https://calendar.google.com/calendar/u/0/embed?src=c_3fc5c4d6ece9d80d49f136c1dcd54d7f44e1acefdbe87228c92ff268e85e2ea0@group.calendar.google.com&ctz=Etc/UTC).
+
+### Publicity
+
+-   A talk about [RAI at ROSCon 2024](https://vimeo.com/1026029511).
+
+### RAI Q&A
+
+Please take a look at [Q&A](https://github.com/RobotecAI/rai/discussions/categories/q-a).
+
+### Developer Resources
+
+See our [documentation](https://robotecai.github.io/rai/) for a deeper dive into RAI, including
+instructions on creating a configuration specifically for your robot.
+
+### Contributing
+
+You are welcome to contribute to RAI! Please see our [Contribution Guide](CONTRIBUTING.md).
+
+### Citation
+
+If you find our work helpful for your research, please consider citing the following BibTeX entry.
+
+```bibtex
+@misc{rachwał2025raiflexibleagentframework,
+      title={RAI: Flexible Agent Framework for Embodied AI},
+      author={Kajetan Rachwał and Maciej Majek and Bartłomiej Boczek and Kacper Dąbrowski and Paweł Liberadzki and Adam Dąbrowski and Maria Ganzha},
+      year={2025},
+      eprint={2505.07532},
+      archivePrefix={arXiv},
+      primaryClass={cs.MA},
+      url={https://arxiv.org/abs/2505.07532},
+}
 ```
-
-对应 service 文件已收录到仓库：
-
-```text
-interrupt/deploy/systemd/user/interrupt-frontgate.service
-```
-
-说明：
-
-- 这是当前真机已验证的前门唤醒 -> 房间会话主路径
-- 其他启动命令保留为调试/排障用途，不作为当前推荐主入口
-
-## 真机快照状态
-
-已验证：
-
-- 前门唤醒可命中并进入房间会话
-- 房间语音收音、回复、动作/LED 快路可工作
-- 前门默认播放出口可走外接 USB 音频设备
-- 房间 idle 退出后会回到前门待机，不会沿用旧唤醒历史立即再次命中
-
-未完全收口：
-
-- 唤醒词命中率仍需要继续调优，存在切碎识别和误识别
-- 从“我在，请说”到房间真正 ready 中间仍有空白时间
-- thinking 阶段用户再次插话时，Gemini Live 仍可能触发上游 `1008 policy violation`
-
-当前推荐参数：
-
-- `INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS=180000`
-- `OM1_WAKEWORD_CHUNK_DURATION=1.6`
-- `OM1_WAKEWORD_MERGE_HISTORY_CHUNKS=3`
-- `OM1_AUDIO_GAIN=2.2`
-- `PULSE_SINK=alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo`
-- `INTERRUPT_RTC_OUTPUT_DEVICE=pulse`
-- `INTERRUPT_G1_NAV_BASE_URL=http://127.0.0.1:5000`
-- `INTERRUPT_G1_NAV_TIMEOUT_S=5`
-
-当前运行口径分为两条：
-
-- 机器人真机主线：
-  `interrupt-frontgate.service` -> 前门唤醒 -> 房间会话 -> Gemini Live -> G1 / OM1
-- 本地开发调试主线：
-  `LiveKit Agents console mode + Gemini Live`
-
-目标能力：
-
-- 本地单机会话，直接在终端里运行
-- 麦克风输入、扬声器输出、支持打断
-- 保持与 LiveKit Agents Playground 接近的会话能力
-- 后续可接入外部三语言唤醒词模块
-- 后续可接入 MCP 工具链
-- 保留网页端作为可选分支，不再是主路径
-
-## 主架构
-
-```text
-Robot frontgate
-  -> interrupt-frontgate.service
-  -> wake word
-  -> room session / realtime agent
-  -> Gemini Live realtime model
-  -> G1 / OM1 tools and feedback
-  -> return to frontgate on idle timeout
-```
-
-机器人当前已验证主线走前门唤醒和房间会话，不再以旧 `console` 直连路径作为真机默认入口。
-`console mode` 仍保留为本地单机会话调试模式，不经过 LiveKit 房间，也不需要网页端。
-
-当前回复播报策略支持通过配置显式切换：
-
-- `INTERRUPT_ASSISTANT_AUDIO_MODE=om1_mirror`
-  - 保持当前默认行为
-  - assistant 回复镜像到 OM1 本地播报
-- `INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only`
-  - 为后续 WebRTC 主播报预留
-  - assistant 回复不再走 OM1 本地 TTS
-- `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=om1_mirror|transport_only|disabled`
-  - 控制本地工具前置确认播报是否继续走 OM1
-
-兼容旧开关：
-
-- `INTERRUPT_MIRROR_ASSISTANT_SPEECH_TO_OM1=1` 等价于 `om1_mirror`
-- `INTERRUPT_MIRROR_ASSISTANT_SPEECH_TO_OM1=0` 等价于 `transport_only`
-
-## 目录结构
-
-- `src/agent.py`：LiveKit Agent 入口，同时支持 `console` / `dev`
-- `src/settings.py`：配置与环境变量加载
-- `src/integrations.py`：外部唤醒词 / MCP 配置适配层
-- `dev_server.py`：本地网页端和 token 接口
-- `web/index.html`：网页端 UI
-- `web/main.js`：网页端 LiveKit 客户端逻辑
-- `config.yaml`：项目默认配置
-- `run_livekit_server.sh`：启动本地 LiveKit Server
-- `run_local_voice_agent.sh`：启动本地语音 console 模式
-- `run_local_text_agent.sh`：启动本地文本 console 模式
-- `run_room_agent.sh`：启动 LiveKit Room worker 模式
-- `run_robot_rtc_endpoint.sh`：启动机器人侧 WebRTC endpoint 骨架
-- `run_frontgate_room_session.sh`：前门唤醒后确保房间会话可用并等待本轮会话结束
-- `run_local_playground.sh`：本地 Playground 入口别名
-- `run_web_playground.sh`：启动本地网页端
-- `tools/check_env.py`：检查依赖与配置
-
-## 快速开始
-
-```bash
-cd /home/zz/HongTu/interrupt
-chmod +x bootstrap.sh run_livekit_server.sh run_local_voice_agent.sh run_web_playground.sh
-./bootstrap.sh
-cp .env.example .env.local
-```
-
-编辑 `.env.local`：
-
-```bash
-LIVEKIT_URL=ws://127.0.0.1:7880
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=secret
-GEMINI_API_KEY=你的密钥
-# 如果 LiveKit 跑在本机/LAN，优先只给 Gemini Realtime 配 WSS 代理，
-# 避免把 LiveKit 房间连接一并走代理。
-WSS_PROXY=http://<gemini-wss-proxy-host>:<port>
-INTERRUPT_INPUT_DEVICE=
-INTERRUPT_OUTPUT_DEVICE=
-INTERRUPT_TEXT_MODE=0
-INTERRUPT_RECORD=0
-INTERRUPT_WAKE_WORD_FACTORY=
-INTERRUPT_MCP_STDIO_COMMAND=
-INTERRUPT_MCP_HTTP_URLS=
-```
-
-如果需要让机器人或同网段设备连接开发机上的 LiveKit Server，再额外设置：
-
-```bash
-LIVEKIT_BIND_ADDRESS=0.0.0.0
-LIVEKIT_NODE_IP=<livekit-lan-ip>
-```
-
-其中 `LIVEKIT_NODE_IP` 应替换成当前开发机局域网 IP。
-
-然后检查环境：
-
-```bash
-source .venv/bin/activate
-python tools/check_env.py
-```
-
-## 本地调试路径
-
-语音模式：
-
-```bash
-cd /home/zz/HongTu/interrupt
-./run_local_voice_agent.sh
-```
-
-文本自测模式：
-
-```bash
-cd /home/zz/HongTu/interrupt
-./run_local_text_agent.sh
-```
-
-多语言自适应自测建议：
-
-- 普通话：`今天天气怎么样`
-- 粤语：`你而家识唔识讲广东话`
-- English: `What can you do for me?`
-- 显式锁定粤语：`之后用粤语回答我`
-- 恢复自动：`恢复自动，跟着我说的话回答`
-
-预期行为：
-
-- 默认跟随用户最近一轮输入语言回答
-- 用户明确要求切换语言后，后续回复先保持该语言
-- 用户要求“恢复自动”后，再回到按当前输入语言自适应
-- 天气、新闻、本地动作/灯光确认播报也应尽量保持同语种
-
-离线逻辑回归：
-
-```bash
-cd /home/zz/HongTu/interrupt
-./.venv/bin/python tools/language_routing_smoke.py
-```
-
-这条脚本不依赖音频设备，也不依赖实时联网会话，主要用于验证：
-
-- 用户输入语言检测
-- 显式锁定回复语言
-- 恢复自动跟随用户语言
-
-导航 bridge 调用链路自测：
-
-```bash
-cd /home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16
-python3 interrupt/tools/nav_bridge_smoke_test.py
-```
-
-这条脚本不会连接真机 ROS，只会在本机临时起一个 mock HTTP bridge，验证：
-
-- `interrupt` 侧 `G1Om1Adapter`
-- `OM1/scripts/g1_nav_command.py`
-- `g1_om1_cli.py`
-- 导航地点查询 / 记忆地点 / 发导航请求
-
-## G1 语音导航桥接
-
-当前推荐的真机导航桥接启动顺序：
-
-1. 先启动 G1Nav2D 的 ROS1 定位与 `move_base`
-2. 再启动本地 HTTP bridge
-3. 最后启动 `interrupt-frontgate.service`
-
-桥接服务启动命令：
-
-```bash
-cd /home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16
-bash G1Nav2D/run_nav_bridge.sh
-```
-
-可选环境变量：
-
-```bash
-G1_NAV_BRIDGE_HOST=127.0.0.1
-G1_NAV_BRIDGE_PORT=5000
-G1_NAV_MAP_FILE=/home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16/map/map_fix.yaml
-G1_NAV_ACTION_SERVER=move_base
-G1_NAV_FRAME_ID=map
-```
-
-本地检查命令：
-
-```bash
-python3 interrupt/tools/g1_om1_cli.py list-locations
-python3 interrupt/tools/g1_om1_cli.py remember 前台 --description 测试点
-python3 interrupt/tools/g1_om1_cli.py navigate 前台
-```
-
-当前口令边界：
-
-- 支持：`带我去前台`、`去会议室`、`navigate to table`
-- 支持：`记住这里是前台`、`save this location as front desk`
-- 支持：`有哪些地点可以去`
-- 暂不支持：`往前走几步`、`后退一点`、`转个圈`
-
-如果要开始试“专用 yue-HK TTS”，可额外配置：
-
-```bash
-INTERRUPT_CANTONESE_TTS_ENABLED=1
-INTERRUPT_CANTONESE_TTS_VOICE=zh-HK-HiuGaaiNeural
-# 可选：mpg123 / ffplay / mpv，默认自动探测
-INTERRUPT_CANTONESE_TTS_PLAYBACK_COMMAND=mpg123
-# 默认会在粤语本地 TTS 播放窗口内临时压掉远端 agent 音频
-INTERRUPT_CANTONESE_TTS_MUTE_REMOTE_AUDIO=1
-```
-
-当前实现只把 `zh-YUE` 本地播报单独路由到微软 `edge-tts` 粤语音色；
-普通话和英语仍保持原有播报链路。
-
-如果要开始试当前主链里的单帧 VLM 视觉聊天，可额外配置：
-
-```bash
-INTERRUPT_VLM_ENABLED=1
-# 可选：优先指定机器人 RGB 相机，例如 /dev/video2 或 video2
-UNITREE_G1_CAMERA_DEVICE=
-# 可选：默认沿用 GEMINI_API_KEY
-GEMINI_VLM_MODEL=gemini-2.5-flash
-INTERRUPT_VLM_WIDTH=640
-INTERRUPT_VLM_HEIGHT=480
-INTERRUPT_VLM_JPEG_QUALITY=75
-INTERRUPT_VLM_MAX_TOKENS=240
-INTERRUPT_VLM_CAPTURE_TIMEOUT_S=3.0
-```
-
-启用后，用户可以直接在当前语音会话里问：
-
-- `你前面有什么`
-- `帮我看看桌上有什么`
-- `你看到有人吗`
-- `What do you see in front of you?`
-
-当前这版视觉能力是“按需抓一帧再回答”，不会改掉现有唤醒、三语、中断、动作/LED、超时退出主路径；如果视觉未开启、相机不可用或画面不清，assistant 会明确说明，而不是假装看到了内容。
-
-如果想先不跑整条语音链，单独测“相机抓帧 + Gemini VLM”是否通，可直接运行：
-
-```bash
-cd /home/zz/HongTu/interrupt
-source .venv/bin/activate
-python tools/vlm_smoke_test.py "你前面有什么"
-```
-
-也可以指定回复语言：
-
-```bash
-python tools/vlm_smoke_test.py "What do you see in front of you?" --language en
-```
-
-列出可用音频设备：
-
-```bash
-cd /home/zz/HongTu/interrupt
-source .venv/bin/activate
-python -m src.agent console --list-devices
-```
-
-如需指定设备：
-
-```bash
-INTERRUPT_INPUT_DEVICE="USB" INTERRUPT_OUTPUT_DEVICE="USB" ./run_local_voice_agent.sh
-```
-
-旁路 WebRTC endpoint 验证：
-
-```bash
-cd /home/zz/HongTu/interrupt
-LIVEKIT_BIND_ADDRESS=0.0.0.0 \
-LIVEKIT_NODE_IP=<livekit-lan-ip> \
-./run_livekit_server.sh
-```
-
-另一个终端：
-
-```bash
-cd /home/zz/HongTu/interrupt
-./run_room_agent.sh
-```
-
-另一个终端：
-
-```bash
-cd /home/zz/HongTu/interrupt
-INTERRUPT_RTC_ROOM_NAME=interrupt-demo \
-INTERRUPT_RTC_IDENTITY=robot-rtc-endpoint \
-INTERRUPT_RTC_INPUT_DEVICE=pulse \
-INTERRUPT_RTC_OUTPUT_DEVICE=pulse \
-./run_robot_rtc_endpoint.sh
-```
-
-这条链路当前是并行验证用，不会替换现有机器人前门主路径。
-如果机器人连不上 `LIVEKIT_URL=ws://<开发机IP>:7880`，优先先确认本机 `run_livekit_server.sh`
-是否以 `LIVEKIT_BIND_ADDRESS=0.0.0.0` 启动，否则 `livekit-server --dev` 在新版本里可能只监听 `127.0.0.1`。
-建议先把主回答切到：
-
-```bash
-export INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only
-```
-
-这样可以验证“房间下行 + 外接设备播放”，同时避免 OM1 本地 TTS 双播报。
-
-如果 `LIVEKIT_URL` 指向局域网地址，而 Gemini Realtime 需要科学上网，优先使用：
-
-```bash
-export WSS_PROXY=http://<gemini-wss-proxy-host>:<port>
-```
-
-不要默认给 worker 加整套 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`，否则可能干扰 LiveKit 房间连接。
-
-机器人侧默认还会开启房间守护，避免 `away -> session.shutdown()` 后需要人工补一次 dispatch：
-
-```bash
-export INTERRUPT_RTC_AUTO_REDISPATCH_ON_AGENT_DISCONNECT=1
-export INTERRUPT_RTC_REDISPATCH_COOLDOWN_S=8
-export INTERRUPT_RTC_AGENT_ABSENCE_CHECK_INTERVAL_S=20
-```
-
-如果现场需要保守排障，也可以临时把自动恢复关掉，只保留手工 dispatch：
-
-```bash
-export INTERRUPT_RTC_AUTO_REDISPATCH_ON_AGENT_DISCONNECT=0
-```
-
-如果感觉“说话打不断”，先检查这三个参数：
-
-```yaml
-agent:
-  interruption_mode: vad
-  min_interruption_duration_ms: 80
-  false_interruption_timeout_ms: 500
-  aec_warmup_duration_ms: 0
-```
-
-其中 `aec_warmup_duration_ms` 如果大于 0，agent 开始说话后的这段时间会故意忽略打断。
-`interruption_mode: vad` 更适合当前这种本地 console 链路，优先按“检测到你开口”来截断当前播报。
-
-如果你希望用户说“停一下”“等一下”“先别说了”这类打断词后，agent 固定播报一句确认话术，可调整：
-
-```yaml
-agent:
-  interruption_acknowledgement: 好的，那您还有其他需求吗？
-```
-
-当前实现会把这条话术注入系统指令中，并在日志里输出打断候选与转写结果，便于继续排查。
-
-机器人 RTC endpoint 默认会启用 LiveKit `AudioProcessingModule` 做参考信号 AEC：
-
-```bash
-export INTERRUPT_RTC_AEC_ENABLED=1
-```
-
-不要把“播报时静音麦克风”作为最终方案。当前 endpoint 会把下行播放帧喂给 AEC 作为 reverse stream，再把麦克风采样经 AEC 后 publish；只有 AEC 不可用时，才回退到临时的低能量回声 ducking。
-
-真机上优先让 `pulse` 指向外接 USB 声卡，而不是写死 `hw:2,0` 这类 ALSA 卡号。卡号可能随启动顺序变化，`pactl info` 应显示：
-
-```text
-Default Sink: alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo
-Default Source: alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo
-```
-
-## 外部模块接入
-
-- 唤醒词：
-  当前目录没有唤醒词实现，已预留 `INTERRUPT_WAKE_WORD_FACTORY` 配置位。
-  后续把外部三语言唤醒词模块整理成 `module.submodule:factory` 形式即可接入。
-
-- MCP：
-  已预留 `INTERRUPT_MCP_STDIO_COMMAND` 和 `INTERRUPT_MCP_HTTP_URLS`。
-  例如本地 stdio MCP：
-
-```bash
-INTERRUPT_MCP_STDIO_COMMAND="npx -y @modelcontextprotocol/server-filesystem /home/zz/HongTu" ./run_local_text_agent.sh
-```
-
-使用 MCP 前，需要额外安装：
-
-```bash
-pip install 'livekit-agents[mcp]'
-```
-
-- G1 / OM1 复用层：
-  当前已新增 `interrupt` 侧适配入口，后续会话层或 MCP 工具都应复用它，而不是重新拼 Unitree 细节。
-
-```bash
-python tools/g1_om1_cli.py check
-python tools/g1_om1_cli.py direct "把LED灯变为红色"
-python tools/g1_om1_cli.py direct "向我挥手"
-python tools/g1_om1_cli.py speak "我在，请说"
-```
-
-如需覆盖默认脚本路径，可设置：
-
-```bash
-export INTERRUPT_G1_OM1_PYTHON=/home/unitree/HongTu/OM1/.venv-g1/bin/python
-export INTERRUPT_G1_DIRECT_COMMAND_SCRIPT=/home/unitree/HongTu/OM1/scripts/g1_direct_command_fallback.py
-export INTERRUPT_G1_FEEDBACK_SCRIPT=/home/unitree/HongTu/OM1/scripts/g1_watchdog_feedback.py
-export INTERRUPT_G1_INTERFACE=eth1
-```
-
-如果是 2026-05-07 这次刷到 Ubuntu 22.04 的 G1 恢复环境，真机实际可用 Unitree 接口改成了 `enP8p1s0`，
-恢复 `.env.local` 时应优先覆盖：
-
-```bash
-export INTERRUPT_G1_INTERFACE=enP8p1s0
-```
-
-- 唤醒前门：
-  当前已补一个“等待唤醒 -> 拉起实时 session -> 会话退出后回待机”的本地编排脚本：
-
-```bash
-python tools/wakeword_session_frontgate.py --once
-```
-
-也可以直接用统一启动脚本：
-
-```bash
-./run_frontgate_session.sh
-```
-
-如果是在机器人环境上直接走真实三语言唤醒模块，优先用：
-
-```bash
-./run_robot_frontgate_session.sh
-```
-
-机器人前门现在默认不再拉起旧 `console` 会话，而是拉起房间会话 wrapper：
-
-```bash
-export INTERRUPT_FRONTGATE_SESSION_COMMAND="/home/unitree/HongTu/interrupt/run_frontgate_room_session.sh"
-```
-
-这个 wrapper 会：
-
-- 确保 `run_room_agent.sh` 已在运行
-- 确保 `run_robot_rtc_endpoint.sh` 已在运行
-- 唤醒后补一次 room dispatch
-- 前门侧等待本轮房间会话结束后再恢复待机 LED
-
-如果需要临时回到旧路径排障，仍然可以显式覆盖：
-
-```bash
-export INTERRUPT_FRONTGATE_SESSION_COMMAND="/home/unitree/HongTu/interrupt/run_local_voice_agent.sh"
-```
-
-如果真实唤醒脚本路径不存在，或对应 factory 启动失败，前台门当前会默认回退到 `stdin` mock gate，便于先验证编排逻辑：
-
-```bash
-python tools/wakeword_session_frontgate.py --wakeword 笨笨同学 --once
-```
-
-如需关闭这个回退保护，可设置：
-
-```bash
-export INTERRUPT_FRONTGATE_ALLOW_FACTORY_FALLBACK=0
-```
-
-后续接入真实唤醒模块时，设置：
-
-```bash
-export INTERRUPT_WAKE_WORD_FACTORY=your_module.submodule:factory
-```
-
-如果直接复用机器人现有 `g1-wakeword/wakeword_adaptive.py`，可以先用：
-
-```bash
-export INTERRUPT_WAKE_WORD_FACTORY=src.om1_wakeword_gate:factory
-export WAKEWORD_SCRIPT=/home/unitree/g1-wakeword/wakeword_adaptive.py
-export INTERRUPT_FRONTGATE_SESSION_COMMAND="/home/zz/HongTu/interrupt/run_local_voice_agent.sh"
-```
-
-它会在前门阶段直接加载外部三语言唤醒模块，并在命中后拉起 session command。
-
-如果机器人上还没有 `wakeword-clean` 环境，先在 `g1-wakeword/` 下执行：
-
-```bash
-cd /home/unitree/HongTu/g1-wakeword
-./install_arm.sh
-```
-
-前门自测脚本：
-
-```bash
-python tools/frontgate_smoke_test.py
-python tools/frontgate_regression_test.py
-```
-
-这个测试不依赖真实麦克风，也不依赖真实唤醒模型；它只验证：
-
-- 前门能收到唤醒事件
-- session command 能被拉起
-- session 退出后能回收
-
-或者显式传入：
-
-```bash
-python tools/wakeword_session_frontgate.py \
-  --factory your_module.submodule:factory \
-  --session-command "/home/zz/HongTu/interrupt/run_local_voice_agent.sh"
-```
-
-## 网页端分支
-
-如果后续仍然需要浏览器版 Playground，再使用下面三步：
-
-```bash
-./run_livekit_server.sh
-./run_local_voice_agent.sh dev
-./run_web_playground.sh
-```
-
-## 参考
-
-- LiveKit startup modes: https://docs.livekit.io/agents/server/startup-modes
-- LiveKit MCP: https://docs.livekit.io/agents/logic/tools/mcp

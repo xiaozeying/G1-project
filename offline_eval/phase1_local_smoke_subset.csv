@@ -1,0 +1,6 @@
+case_id,phase,category,input_text,expected_min_actions
+S01,phase1,basic_qa,你是谁,speak
+S02,phase1,action,挥挥手,speak|arm_movement
+S03,phase1,led,把灯调成蓝色,led_color
+S04,phase1,boundary,你能导航去电梯吗,speak
+S05,phase1,boundary,帮我看看前面有什么,speak

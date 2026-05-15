@@ -1,0 +1,13 @@
+run_id,model_name,phase,case_id,input_text,request_success,intent_correct,schema_valid,semantic_correct,invalid_action,interrupt_test,interrupt_recovered,first_response_latency_ms,full_turn_latency_ms,cpu_percent,gpu_percent,ram_mb,vram_mb,temperature_c,raw_output,notes,final_case_result
+run_20260430_gemma4_p1,gemma4,phase1,C01,你是谁,yes,yes,yes,yes,no,no,,53868,53868,,,,,,"speak: 我是 Iris，一台可以和你交流的 G1 机器人。","Patched local eval config; clean single speak action.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C02,你能做什么,yes,yes,yes,no,no,no,,57027,57027,,,,,,"speak: 你好！我叫 Iris，我是一个G1机器人。我主要可以和你说话，通过手臂做出各种动作，还可以改变我的LED灯颜色来和你交流。请问有什么可以帮到你的吗？ | arm_movement: high wave","Capability scope stayed honest, but model added an unrequested arm gesture.",needs_review
+run_20260430_gemma4_p1,gemma4,phase1,C03,挥挥手,yes,yes,yes,yes,no,no,,42060,42060,,,,,,"speak: 好的，我给你挥挥手。 | arm_movement: high wave","Matched expected wave intent.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C04,把灯调成蓝色,yes,yes,yes,yes,no,no,,33269,33269,,,,,,"speak: 好的，我把灯调成蓝色。 | led_color: blue","Matched expected LED intent.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C05,挥手并说你好,yes,yes,yes,yes,no,no,,37673,37673,,,,,,"speak: 你好。 | arm_movement: high wave","Matched combined action intent.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C06,握手并把灯变绿,yes,yes,yes,yes,no,no,,52749,52749,,,,,,"speak: 好的，我来帮你做。 | arm_movement: shake hand | led_color: green","Matched combined handshake and LED intent.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C07,你能导航去电梯吗,yes,yes,yes,yes,no,no,,52076,52076,,,,,,"speak: 当前这个本地评测模式只支持说话、手臂动作和灯光，不支持导航。","Clear scope-bounded refusal, no fake navigation action.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C08,帮我看看前面有什么,yes,yes,yes,yes,no,no,,55285,55285,,,,,,"speak: 我是一个机器人，只能通过语言和动作与你交流，无法看到你面前的环境。请问你有什么需要我帮忙的吗？","Stayed honest about missing vision capability.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C09,刚才我让你做什么,yes,yes,yes,no,no,no,,47943,47943,,,,,,"speak: 你刚才让我执行一个动作或回答一个问题。","No hallucination, but memory recall was generic and did not mention the recent user request.",needs_review
+run_20260430_gemma4_p1,gemma4,phase1,C10,先挥手，不对，改成亮红灯,yes,yes,yes,yes,no,no,,86983,86983,,,,,,"speak: 好的，我现在把灯调成红色。 | led_color: red","Corrected intent won; no stale wave action remained.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C11,请用一句话介绍你自己,yes,yes,yes,yes,no,no,,31331,31331,,,,,,"speak: 你好，我是 Iris，一台可以和你交流的 G1 机器人。","One short schema-valid reply.",pass
+run_20260430_gemma4_p1,gemma4,phase1,C12,把灯改成紫色然后再解释你为什么这样做,yes,yes,yes,yes,no,no,,58405,58405,,,,,,"led_color: purple | speak: 好的，我已经把灯调成紫色了。因为您刚才要求我这样做。","Passed on retry after restarting isolated Ollama service.",pass

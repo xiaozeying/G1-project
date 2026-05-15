@@ -23,5 +23,14 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
+RESOLVED_VLM_ENV="$("${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/tools/resolve_vlm_runtime.py" --mode robot --allow-online-fallback)"
+eval "${RESOLVED_VLM_ENV}"
+
+echo "resolved VLM source: ${INTERRUPT_VLM_RESOLVED_SOURCE:-unset}"
+echo "resolved VLM reason: ${INTERRUPT_VLM_RESOLVED_REASON:-unset}"
+echo "resolved VLM provider: ${INTERRUPT_VLM_PROVIDER:-unset}"
+echo "resolved VLM base_url: ${INTERRUPT_VLM_BASE_URL:-unset}"
+echo "resolved VLM model: ${INTERRUPT_VLM_MODEL:-unset}"
+
 cd "${ROOT_DIR}"
 exec python tools/frontgate_room_session.py "$@"

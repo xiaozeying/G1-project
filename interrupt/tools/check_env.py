@@ -80,6 +80,30 @@ def check_env_var() -> None:
     print(f"  LIVEKIT_API_KEY -> {'SET' if os.getenv('LIVEKIT_API_KEY') else 'MISSING'}")
     print(f"  LIVEKIT_API_SECRET -> {'SET' if os.getenv('LIVEKIT_API_SECRET') else 'MISSING'}")
     print(f"  GEMINI_API_KEY -> {'SET' if os.getenv('GEMINI_API_KEY') else 'MISSING'}")
+    print(
+        "  INTERRUPT_AGENT_BACKEND -> "
+        f"{os.getenv('INTERRUPT_AGENT_BACKEND') or 'gemini_realtime'}"
+    )
+    print(
+        "  INTERRUPT_AGENT_RUNTIME_MODE -> "
+        f"{os.getenv('INTERRUPT_AGENT_RUNTIME_MODE') or 'online_full'}"
+    )
+    print(
+        "  INTERRUPT_AGENT_LOCAL_TEXT_DECISION_MODE -> "
+        f"{os.getenv('INTERRUPT_AGENT_LOCAL_TEXT_DECISION_MODE') or 'disabled'}"
+    )
+    print(
+        "  INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER -> "
+        f"{os.getenv('INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER') or 'ollama'}"
+    )
+    print(
+        "  INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL -> "
+        f"{os.getenv('INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL') or 'http://127.0.0.1:11434'}"
+    )
+    print(
+        "  INTERRUPT_AGENT_LOCAL_TEXT_MODEL -> "
+        f"{os.getenv('INTERRUPT_AGENT_LOCAL_TEXT_MODEL') or 'qwen2.5:7b'}"
+    )
     print(f"  INTERRUPT_VLM_ENABLED -> {os.getenv('INTERRUPT_VLM_ENABLED', '0') or '0'}")
     print(
         "  INTERRUPT_VLM_PROVIDER -> "
@@ -164,7 +188,9 @@ def check_config() -> None:
     print(
         "  OK   config -> "
         f"livekit={settings.livekit.url} "
+        f"agent_backend={settings.agent.backend} "
         f"model={settings.agent.model} "
+        f"local_text_model={settings.agent.local_text_model} "
         f"voice={settings.agent.voice} "
         f"console_text={settings.console.text_mode} "
         f"web={settings.web.host}:{settings.web.port} "

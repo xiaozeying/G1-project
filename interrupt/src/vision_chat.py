@@ -109,6 +109,7 @@ def ask_camera_question(
                 config,
                 prompt=prompt,
                 frame_b64=encoded,
+                structured=structured,
             )
             if not structured:
                 return VisionChatResult(ok=True, answer=response_text, camera_device=device)
@@ -209,19 +210,27 @@ def _vision_backend_requires_api_key(config: VisionChatConfig) -> bool:
     return config.provider == "gemini_openai_compat"
 
 
-def _request_vision_backend(config: VisionChatConfig, *, prompt: str, frame_b64: str) -> str:
+def _request_vision_backend(
+    config: VisionChatConfig,
+    *,
+    prompt: str,
+    frame_b64: str,
+    structured: bool,
+) -> str:
     provider = (config.provider or "").strip().lower()
     if provider in {"gemini_openai_compat", "openai_compatible"}:
         return _request_openai_compatible_vision(
             config,
             prompt=prompt,
             frame_b64=frame_b64,
+            structured=structured,
         )
     if provider == "ollama_native":
         return _request_ollama_native_vision(
             config,
             prompt=prompt,
             frame_b64=frame_b64,
+            structured=structured,
         )
     raise RuntimeError(f"unsupported_vision_provider:{provider or 'empty'}")
 
@@ -231,6 +240,7 @@ def _request_openai_compatible_vision(
     *,
     prompt: str,
     frame_b64: str,
+    structured: bool,
 ) -> str:
     payload = {
         "model": config.model,
@@ -251,6 +261,8 @@ def _request_openai_compatible_vision(
         ],
         "max_tokens": config.max_tokens,
     }
+    if structured:
+        payload["response_format"] = {"type": "json_object"}
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url=config.base_url.rstrip("/") + "/chat/completions",
@@ -268,10 +280,12 @@ def _request_openai_compatible_vision(
     if isinstance(content, list):
         texts = [part.get("text", "") for part in content if isinstance(part, dict)]
         content = "".join(texts)
-    normalized = _normalize_vision_answer(str(content or "").strip())
-    if not normalized:
+    text = str(content or "").strip()
+    if not text:
         raise RuntimeError("vision_response_is_empty")
-    return normalized
+    if structured:
+        return text
+    return _normalize_vision_answer(text)
 
 
 def _request_headers(config: VisionChatConfig) -> dict[str, str]:
@@ -288,6 +302,7 @@ def _request_ollama_native_vision(
     *,
     prompt: str,
     frame_b64: str,
+    structured: bool,
 ) -> str:
     payload = {
         "model": config.model,
@@ -313,10 +328,11 @@ def _request_ollama_native_vision(
         parsed = json.loads(response.read().decode("utf-8"))
     message = parsed.get("message") or {}
     content = str(message.get("content") or "").strip()
-    normalized = _normalize_vision_answer(content)
-    if not normalized:
+    if not content:
         raise RuntimeError("vision_response_is_empty")
-    return normalized
+    if structured:
+        return content
+    return _normalize_vision_answer(content)
 
 
 def _normalize_ollama_native_base_url(base_url: str) -> str:

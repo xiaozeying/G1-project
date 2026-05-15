@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import ipaddress
 import json
 import logging
@@ -31,7 +32,13 @@ from src.navigation_intents import (
 )
 from src.safe_action_gateway import evaluate_action_safety, evaluate_navigation_safety
 from src.news import query_news
+from src.local_text_brain import LocalTextToolCall, run_local_text_brain
 from src.speech_feedback import SpeechFeedbackRouter
+from src.speech_loop_guard import (
+    local_playback_guard_active,
+    note_local_playback,
+    should_ignore_transcript,
+)
 from src.settings import load_settings
 from src.vision_chat import VisionChatConfig, ask_camera_question
 from src.weather import query_weather
@@ -114,6 +121,8 @@ ENABLE_PATCHED_JOB_TOKEN = os.getenv(
     "INTERRUPT_AGENT_PATCH_JOB_TOKEN",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
+LOCAL_TEXT_DECISION_MODE = SETTINGS.agent.local_text_decision_mode
+AGENT_RUNTIME_MODE = SETTINGS.agent.runtime_mode
 ENABLE_SAFE_ACTION_GATEWAY = os.getenv(
     "INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY",
     "0",
@@ -170,6 +179,16 @@ _LAST_DETECTED_USER_LANGUAGE = "zh-CN"
 _FORCED_REPLY_LANGUAGE = ""
 _RECENT_INTENT_LOCK = threading.Lock()
 _RECENT_INTENTS: dict[str, dict[str, float]] = {}
+OFFLINE_SINGLEBOX_ALLOWED_LOCAL_TOOLS = frozenset(
+    {
+        "perform_body_action",
+        "set_led_color",
+        "ask_camera_vision",
+        "list_saved_locations",
+        "navigate_to_saved_location",
+        "remember_current_location",
+    }
+)
 
 REPLY_LANGUAGE_MANDARIN = "zh-CN"
 REPLY_LANGUAGE_CANTONESE = "zh-YUE"
@@ -548,6 +567,30 @@ def _localized_text(
         REPLY_LANGUAGE_ENGLISH: english or mandarin,
     }
     return localized.get(target, mandarin)
+
+
+def _is_offline_singlebox_mode() -> bool:
+    return AGENT_RUNTIME_MODE == "offline_singlebox"
+
+
+def _offline_singlebox_limit_reply() -> str:
+    return _localized_text(
+        "当前是单机离线模式，这个请求超出了离线能力范围。请打开在线增强模式后再试。",
+        "而家係單機離線模式，呢個請求超出咗離線能力範圍。請打開在線增強模式之後再試。",
+        "The robot is in single-box offline mode. This request is outside the offline capability set. Please enable online mode and try again.",
+    )
+
+
+def _offline_singlebox_unavailable_reply() -> str:
+    return _localized_text(
+        "当前是单机离线模式，但本地能力暂时不可用。请稍后重试，或切回在线增强模式。",
+        "而家係單機離線模式，但本地能力暫時不可用。請稍後再試，或者切回在線增強模式。",
+        "The robot is in single-box offline mode, but the local capability path is temporarily unavailable. Please try again later or switch back to online mode.",
+    )
+
+
+def _tool_call_allowed_in_offline_singlebox(tool_call: LocalTextToolCall) -> bool:
+    return tool_call.name in OFFLINE_SINGLEBOX_ALLOWED_LOCAL_TOOLS
 
 
 def _remember_reply_language_preference(text: str) -> None:
@@ -1019,6 +1062,24 @@ def _query_ack_text(text: str) -> str | None:
             return "Okay, let me introduce myself first."
         return "好的，我先介绍一下自己。"
     return None
+
+
+def _looks_like_local_tool_failure(text: str) -> bool:
+    normalized = _normalize_assistant_text(text).lower()
+    if not normalized:
+        return True
+    failure_tokens = (
+        "failed",
+        "unavailable",
+        "ignored mismatched",
+        "暂时没法",
+        "当前不可用",
+        "拿不到",
+        "未能",
+        "失败",
+        "抱歉",
+    )
+    return any(token in normalized for token in failure_tokens)
 
 
 def _navigation_ack_text(location: str) -> str:
@@ -1877,6 +1938,165 @@ async def _remember_current_location_local(
     )
 
 
+async def _execute_local_text_tool_call(tool_call: LocalTextToolCall) -> str:
+    name = tool_call.name
+    arguments = tool_call.arguments
+    if name == "perform_body_action":
+        action = _normalize_body_action(str(arguments.get("action", "") or ""))
+        result = await _execute_action_local(action, source="local_text_brain")
+        if _looks_like_local_tool_failure(result):
+            return result
+        return _action_ack_text(action)
+    if name == "set_led_color":
+        color = _normalize_led_color(str(arguments.get("color", "") or ""))
+        result = await _execute_led_color_local(color, source="local_text_brain")
+        if _looks_like_local_tool_failure(result):
+            return result
+        return _led_ack_text(color)
+    if name == "execute_robot_command_text":
+        text = str(arguments.get("text", "") or "").strip()
+        if not text:
+            return _localized_text(
+                "我没有拿到可执行的机器人命令文本。",
+                "我冇收到可執行嘅機械人命令文本。",
+                "I did not receive an executable robot command text.",
+            )
+        result = await _execute_direct_text_local(text, source="local_text_brain")
+        if _looks_like_local_tool_failure(result):
+            return result
+        return _localized_text(
+            "好的，正在执行。",
+            "好啊，依家執行。",
+            "Okay, executing now.",
+        )
+    if name == "ask_camera_vision":
+        question = str(arguments.get("question", "") or "").strip()
+        return await InterruptAssistant().ask_camera_vision(question)
+    if name == "get_weather":
+        location = str(arguments.get("location", "") or "").strip()
+        return await InterruptAssistant().get_weather(location)
+    if name == "get_news":
+        topic = str(arguments.get("topic", "") or "").strip()
+        return await InterruptAssistant().get_news(topic)
+    if name == "list_saved_locations":
+        return await _list_saved_locations_local()
+    if name == "navigate_to_saved_location":
+        location = str(arguments.get("location", "") or "").strip()
+        return await _navigate_to_saved_location_local(location, source="local_text_brain")
+    if name == "remember_current_location":
+        location = str(arguments.get("location", "") or "").strip()
+        description = str(arguments.get("description", "") or "").strip()
+        return await _remember_current_location_local(
+            location,
+            description=description,
+            source="local_text_brain",
+        )
+    return _localized_text(
+        f"本地文本脑返回了暂未接入的工具：{name}",
+        f"本地文本腦返回咗暫未接入嘅工具：{name}",
+        f"The local text brain returned an unsupported tool: {name}.",
+    )
+
+
+async def _try_handle_local_text_decision(session: AgentSession, text: str) -> bool:
+    offline_singlebox = _is_offline_singlebox_mode()
+    if LOCAL_TEXT_DECISION_MODE == "disabled" and not offline_singlebox:
+        return False
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return False
+    decision = await asyncio.to_thread(
+        run_local_text_brain,
+        dataclasses.replace(SETTINGS.agent, backend="local_text_ollama"),
+        user_text=normalized,
+        language=_preferred_reply_language(),
+    )
+    LOGGER.info(
+        "local_text_decision: mode=%s ok=%s tool_calls=%s text_reply=%r error=%s user_text=%r",
+        LOCAL_TEXT_DECISION_MODE,
+        decision.ok,
+        [tool.name for tool in decision.tool_calls],
+        decision.text_reply,
+        decision.error,
+        normalized,
+    )
+    if LOCAL_TEXT_DECISION_MODE == "shadow" and not offline_singlebox:
+        return False
+    if not decision.ok:
+        if offline_singlebox:
+            try:
+                await session.interrupt(force=True)
+            except Exception:
+                LOGGER.debug("offline_singlebox interrupt skipped after local_text failure", exc_info=True)
+            _speak_local_text_reply_fallback(_offline_singlebox_unavailable_reply())
+            return True
+        return False
+    if not decision.tool_calls and LOCAL_TEXT_DECISION_MODE != "prefer_all" and not offline_singlebox:
+        return False
+    if offline_singlebox:
+        allowed_tool_calls = [
+            tool_call for tool_call in decision.tool_calls if _tool_call_allowed_in_offline_singlebox(tool_call)
+        ]
+        blocked_tool_names = [
+            tool_call.name for tool_call in decision.tool_calls if not _tool_call_allowed_in_offline_singlebox(tool_call)
+        ]
+        if blocked_tool_names:
+            LOGGER.info(
+                "offline_singlebox rejected local tool calls: blocked=%s user_text=%r",
+                blocked_tool_names,
+                normalized,
+            )
+        if not allowed_tool_calls:
+            try:
+                await session.interrupt(force=True)
+            except Exception:
+                LOGGER.debug("offline_singlebox interrupt skipped after out-of-scope request", exc_info=True)
+            _speak_local_text_reply_fallback(_offline_singlebox_limit_reply())
+            return True
+        decision = dataclasses.replace(
+            decision,
+            tool_calls=allowed_tool_calls[:2],
+            text_reply="",
+        )
+
+    _remember_latest_user_text(normalized)
+    try:
+        await session.interrupt(force=True)
+    except Exception:
+        LOGGER.debug("local_text_decision interrupt skipped or failed", exc_info=True)
+
+    replies: list[str] = []
+    for tool_call in decision.tool_calls[:2]:
+        reply = await _execute_local_text_tool_call(tool_call)
+        reply = _normalize_assistant_text(reply)
+        if reply:
+            replies.append(reply)
+    final_reply = next((reply for reply in replies if reply), "")
+    if not final_reply and decision.text_reply:
+        final_reply = _normalize_assistant_text(decision.text_reply)
+    if not final_reply and not decision.tool_calls and LOCAL_TEXT_DECISION_MODE == "prefer_all":
+        final_reply = _localized_text(
+            "我先切到本地对话链了，不过这句暂时还没有生成稳定回复。",
+            "我而家已經切到本地對話鏈，不過呢句暫時未生成穩定回覆。",
+            "I switched to the local dialogue path, but I do not have a stable reply for that yet.",
+        )
+    if final_reply:
+        try:
+            session.say(
+                final_reply,
+                allow_interruptions=SETTINGS.agent.allow_interruptions,
+                add_to_chat_ctx=True,
+            )
+        except RuntimeError as exc:
+            LOGGER.warning(
+                "local_text_decision session.say unavailable, fallback to local speak: error=%s text=%r",
+                exc,
+                final_reply,
+            )
+            _speak_local_text_reply_fallback(final_reply)
+    return True
+
+
 async def _complete_action_window(reason: str) -> None:
     if ACTION_BUSY_HOLD_S > 0:
         await asyncio.sleep(ACTION_BUSY_HOLD_S)
@@ -2453,9 +2673,23 @@ def _build_realtime_input_config() -> google_types.RealtimeInputConfig:
     )
 
 
+def _require_supported_room_agent_backend() -> None:
+    backend = SETTINGS.agent.backend
+    if backend == "gemini_realtime":
+        if not SETTINGS.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
+        return
+    if backend == "local_text_ollama":
+        raise RuntimeError(
+            "INTERRUPT_AGENT_BACKEND=local_text_ollama 已识别，但正式 LiveKit room agent 仍未接入本地文本脑。"
+            " 当前请继续使用本机评测入口 `interrupt/run_local_text_offline_eval.sh`，"
+            " 或将 backend 改回 gemini_realtime。"
+        )
+    raise RuntimeError(f"unsupported agent backend: {backend}")
+
+
 def _build_session() -> AgentSession:
-    if not SETTINGS.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
+    _require_supported_room_agent_backend()
     mcp_servers = build_mcp_servers(SETTINGS)
     if not mcp_servers:
         LOGGER.warning("未配置可用 MCP/HTTP 实时工具；天气走本地接口，新闻走 RSS 直连，其他外部实时数据能力有限。")
@@ -2515,6 +2749,28 @@ def _mirror_assistant_text_to_om1_async(text: str) -> None:
         language=_preferred_reply_language(),
         normalize_tts_text=_normalize_tts_text,
     )
+
+
+def _speak_local_text_reply_fallback(text: str) -> bool:
+    normalized = _normalize_tts_text(text)
+    if not normalized:
+        return False
+    if not G1_ADAPTER.available:
+        LOGGER.warning("local text reply fallback skipped: G1 adapter unavailable")
+        return False
+    result = G1_ADAPTER.speak(normalized)
+    if result.ok:
+        note_local_playback(normalized, language=_preferred_reply_language())
+        LOGGER.info("local text reply fallback spoke via OM1: text=%r", normalized)
+        return True
+    LOGGER.warning(
+        "local text reply fallback failed: rc=%s stdout=%r stderr=%r text=%r",
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        normalized,
+    )
+    return False
 
 
 def _wire_debug_events(session: AgentSession) -> None:
@@ -2683,12 +2939,32 @@ def _wire_debug_events(session: AgentSession) -> None:
             if is_final:
                 interrupted_while_speaking["value"] = False
             return
+        if local_playback_guard_active() and session.agent_state == "speaking":
+            LOGGER.info(
+                "user_input_transcribed ignored during local playback guard: final=%s text=%r",
+                is_final,
+                transcript,
+            )
+            if is_final:
+                interrupted_while_speaking["value"] = False
+            return
+        if transcript and should_ignore_transcript(transcript):
+            LOGGER.info(
+                "user_input_transcribed ignored probable self-playback echo: final=%s text=%r",
+                is_final,
+                transcript,
+            )
+            if is_final:
+                interrupted_while_speaking["value"] = False
+            return
         if transcript:
             _mark_effective_user_input(transcript)
             _remember_reply_language_preference(transcript)
             _remember_recent_user_intents(transcript)
             if not is_final and len(_normalize_assistant_text(transcript)) >= PARTIAL_FASTPATH_MIN_CHARS:
                 loop.create_task(_try_handle_robot_fastpath(transcript))
+            if is_final:
+                loop.create_task(_try_handle_local_text_decision(session, transcript))
         if is_final:
             interrupted_while_speaking["value"] = False
 
@@ -2711,6 +2987,15 @@ def _wire_debug_events(session: AgentSession) -> None:
         if role == "user" and not interrupted and text:
             if _is_noise_only_transcript(text):
                 LOGGER.info("conversation_item_added ignored noise-only user text=%r", text)
+                return
+            if local_playback_guard_active() and session.agent_state == "speaking":
+                LOGGER.info(
+                    "conversation_item_added ignored during local playback guard text=%r",
+                    text,
+                )
+                return
+            if should_ignore_transcript(text):
+                LOGGER.info("conversation_item_added ignored probable self-playback echo text=%r", text)
                 return
             _mark_effective_user_input(text)
             _remember_reply_language_preference(text)
@@ -2786,6 +3071,15 @@ def _patched_agent_token(ctx: JobContext) -> str:
 
 async def entrypoint(ctx: JobContext) -> None:
     ctx.log_context_fields = {"room": ctx.room.name}
+    LOGGER.info(
+        "agent backend selected: backend=%s runtime_mode=%s model=%s local_text_decision_mode=%s local_text_provider=%s local_text_model=%s",
+        SETTINGS.agent.backend,
+        SETTINGS.agent.runtime_mode,
+        SETTINGS.agent.model,
+        SETTINGS.agent.local_text_decision_mode,
+        SETTINGS.agent.local_text_provider,
+        SETTINGS.agent.local_text_model,
+    )
     claims = ctx.token_claims()
     video = getattr(claims, "video", None)
     print(
