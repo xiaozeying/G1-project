@@ -177,6 +177,13 @@ def build_candidates(mode: str, allow_online_fallback: bool) -> list[Candidate]:
     if mode == "local":
         defaults = [
             _candidate(
+                "minicpm_v46_local",
+                "openai_compatible",
+                os.getenv("INTERRUPT_LOCAL_MINICPM_BASE_URL", "http://127.0.0.1:8000/v1"),
+                os.getenv("INTERRUPT_LOCAL_MINICPM_MODEL", "MiniCPM-V-4_6"),
+                os.getenv("INTERRUPT_LOCAL_MINICPM_API_KEY", ""),
+            ),
+            _candidate(
                 "qwen25_vl_7b_local",
                 "openai_compatible",
                 os.getenv("INTERRUPT_LOCAL_QWEN_BASE_URL", "http://127.0.0.1:8000/v1"),
@@ -203,6 +210,20 @@ def build_candidates(mode: str, allow_online_fallback: bool) -> list[Candidate]:
             candidates.append(configured)
     else:
         robot_defaults = [
+            _candidate(
+                "robot_offline_minicpm",
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_MINICPM_PROVIDER", "openai_compatible"),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_MINICPM_BASE_URL", ""),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_MINICPM_MODEL", ""),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_MINICPM_API_KEY", ""),
+            ),
+            _candidate(
+                "robot_offline_qwen_vl",
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_QWEN_PROVIDER", "openai_compatible"),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_QWEN_BASE_URL", ""),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_QWEN_MODEL", ""),
+                os.getenv("INTERRUPT_ROBOT_OFFLINE_QWEN_API_KEY", ""),
+            ),
             _candidate(
                 "robot_offline_ollama",
                 os.getenv("INTERRUPT_ROBOT_OFFLINE_VLM_PROVIDER", "ollama_native"),

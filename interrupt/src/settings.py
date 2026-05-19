@@ -42,6 +42,7 @@ class AgentConfig:
     aec_warmup_duration_ms: int
     user_away_timeout_ms: int
     local_text_provider: str
+    local_text_api_key: str
     local_text_base_url: str
     local_text_model: str
 
@@ -195,10 +196,29 @@ def _normalize_agent_backend(value: object) -> str:
         "google_realtime": "gemini_realtime",
         "local_text": "local_text_ollama",
         "local_text_ollama": "local_text_ollama",
+        "local_text_openai": "local_text_openai_compatible",
+        "local_text_openai_compatible": "local_text_openai_compatible",
         "ollama_text": "local_text_ollama",
         "offline_text": "local_text_ollama",
     }
     return alias_map.get(normalized, normalized or "gemini_realtime")
+
+
+def _normalize_local_text_provider(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    alias_map = {
+        "": "ollama",
+        "ollama": "ollama",
+        "ollama_native": "ollama",
+        "openai": "openai_compatible",
+        "openai_compatible": "openai_compatible",
+        "local_openai": "openai_compatible",
+        "vllm": "openai_compatible",
+        "sglang": "openai_compatible",
+        "minicpm": "openai_compatible",
+        "minicpm_v46": "openai_compatible",
+    }
+    return alias_map.get(normalized, normalized or "ollama")
 
 
 def _normalize_agent_runtime_mode(value: object) -> str:
@@ -376,11 +396,16 @@ def load_settings(config_path: str | os.PathLike[str] | None = None) -> AppSetti
                     str(agent.get("user_away_timeout_ms", 15000)),
                 )
             ),
-            local_text_provider=os.getenv(
-                "INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER",
-                str(agent.get("local_text_provider", "ollama")),
-            ).strip()
-            or "ollama",
+            local_text_provider=_normalize_local_text_provider(
+                os.getenv(
+                    "INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER",
+                    str(agent.get("local_text_provider", "ollama")),
+                )
+            ),
+            local_text_api_key=os.getenv(
+                "INTERRUPT_AGENT_LOCAL_TEXT_API_KEY",
+                str(agent.get("local_text_api_key", "")),
+            ).strip(),
             local_text_base_url=os.getenv(
                 "INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL",
                 str(agent.get("local_text_base_url", "http://127.0.0.1:11434")),

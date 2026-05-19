@@ -2007,7 +2007,14 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
         return False
     decision = await asyncio.to_thread(
         run_local_text_brain,
-        dataclasses.replace(SETTINGS.agent, backend="local_text_ollama"),
+        dataclasses.replace(
+            SETTINGS.agent,
+            backend=(
+                "local_text_openai_compatible"
+                if SETTINGS.agent.local_text_provider == "openai_compatible"
+                else "local_text_ollama"
+            ),
+        ),
         user_text=normalized,
         language=_preferred_reply_language(),
     )
@@ -2679,9 +2686,9 @@ def _require_supported_room_agent_backend() -> None:
         if not SETTINGS.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
         return
-    if backend == "local_text_ollama":
+    if backend in {"local_text_ollama", "local_text_openai_compatible"}:
         raise RuntimeError(
-            "INTERRUPT_AGENT_BACKEND=local_text_ollama 已识别，但正式 LiveKit room agent 仍未接入本地文本脑。"
+            f"INTERRUPT_AGENT_BACKEND={backend} 已识别，但正式 LiveKit room agent 仍未接入本地文本脑。"
             " 当前请继续使用本机评测入口 `interrupt/run_local_text_offline_eval.sh`，"
             " 或将 backend 改回 gemini_realtime。"
         )

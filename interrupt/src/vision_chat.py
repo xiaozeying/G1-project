@@ -443,8 +443,23 @@ def _encode_image_file_base64(image_path: Path) -> str:
     return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
+def _open_camera_capture(device: str):
+    if cv2 is None:
+        return None
+    if device.startswith("/dev/video"):
+        index_text = device.rsplit("video", 1)[-1]
+        if index_text.isdigit() and hasattr(cv2, "CAP_V4L2"):
+            cap = cv2.VideoCapture(int(index_text), cv2.CAP_V4L2)
+            if cap.isOpened():
+                return cap
+            cap.release()
+    return cv2.VideoCapture(device)
+
+
 def _capture_jpeg_base64(config: VisionChatConfig, device: str) -> str:
-    cap = cv2.VideoCapture(device)
+    cap = _open_camera_capture(device)
+    if cap is None:
+        return ""
     if not cap.isOpened():
         LOGGER.warning("failed to open camera: %s", device)
         return ""
@@ -506,7 +521,9 @@ def _find_camera_device(preferred_device: str) -> str:
 def _probe_camera(device: str) -> bool:
     if cv2 is None:
         return False
-    cap = cv2.VideoCapture(device)
+    cap = _open_camera_capture(device)
+    if cap is None:
+        return False
     if not cap.isOpened():
         return False
     try:
@@ -576,8 +593,18 @@ jpeg_quality = int(sys.argv[4])
 warmup_frames = int(sys.argv[5])
 timeout_s = float(sys.argv[6])
 
+def open_capture(device: str):
+    if device.startswith("/dev/video"):
+        index_text = device.rsplit("video", 1)[-1]
+        if index_text.isdigit() and hasattr(cv2, "CAP_V4L2"):
+            cap = cv2.VideoCapture(int(index_text), cv2.CAP_V4L2)
+            if cap.isOpened():
+                return cap
+            cap.release()
+    return cv2.VideoCapture(device)
+
 def probe(device: str) -> bool:
-    cap = cv2.VideoCapture(device)
+    cap = open_capture(device)
     if not cap.isOpened():
         return False
     try:
@@ -612,7 +639,7 @@ if not device:
     print(json.dumps({"ok": False, "error": "camera_not_found"}))
     raise SystemExit(0)
 
-cap = cv2.VideoCapture(device)
+cap = open_capture(device)
 if not cap.isOpened():
     print(json.dumps({"ok": False, "error": "capture_failed", "device": device}))
     raise SystemExit(0)

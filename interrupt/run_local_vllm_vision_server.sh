@@ -25,6 +25,7 @@ MAX_MODEL_LEN="${VLM_SERVER_MAX_MODEL_LEN:-8192}"
 GPU_MEMORY_UTILIZATION="${VLM_SERVER_GPU_MEMORY_UTILIZATION:-0.90}"
 TENSOR_PARALLEL_SIZE="${VLM_SERVER_TENSOR_PARALLEL_SIZE:-1}"
 EXTRA_ARGS="${VLM_SERVER_EXTRA_ARGS:-}"
+LIMIT_MM_PER_PROMPT="${VLM_SERVER_LIMIT_MM_PER_PROMPT:-}"
 
 if [[ -z "${MODEL_PATH}" ]]; then
   echo "请先设置 VLM_SERVER_MODEL_PATH，例如："
@@ -55,6 +56,10 @@ if [[ -n "${SERVED_MODEL_NAME}" ]]; then
   CMD+=(--served-model-name "${SERVED_MODEL_NAME}")
 fi
 
+if [[ -n "${LIMIT_MM_PER_PROMPT}" ]]; then
+  CMD+=(--limit-mm-per-prompt "${LIMIT_MM_PER_PROMPT}")
+fi
+
 if [[ -n "${EXTRA_ARGS}" ]]; then
   # shellcheck disable=SC2206
   EXTRA_PARTS=(${EXTRA_ARGS})
@@ -71,6 +76,7 @@ echo "dtype: ${DTYPE}"
 echo "max_model_len: ${MAX_MODEL_LEN}"
 echo "gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}"
 echo "tensor_parallel_size: ${TENSOR_PARALLEL_SIZE}"
+echo "limit_mm_per_prompt: ${LIMIT_MM_PER_PROMPT:-<none>}"
 echo "extra_args: ${EXTRA_ARGS:-<none>}"
 
 exec "${CMD[@]}"

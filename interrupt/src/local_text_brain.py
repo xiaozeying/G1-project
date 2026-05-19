@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 
 from src.settings import AgentConfig
 
@@ -195,7 +197,41 @@ def _normalize_base_url(base_url: str) -> str:
     return normalized + "/api"
 
 
+def _normalize_openai_base_url(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized
+    return normalized + "/v1"
+
+
+def _build_headers(api_key: str) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+    return headers
+
+
 def _parse_ollama_tool_calls(message: dict[str, Any]) -> list[LocalTextToolCall]:
+    tool_calls_raw = message.get("tool_calls") or []
+    tool_calls: list[LocalTextToolCall] = []
+    for item in tool_calls_raw:
+        function = item.get("function") or {}
+        name = str(function.get("name") or "").strip()
+        arguments = function.get("arguments") or {}
+        if not name:
+            continue
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {"raw": arguments}
+        if not isinstance(arguments, dict):
+            arguments = {"value": arguments}
+        tool_calls.append(LocalTextToolCall(name=name, arguments=arguments))
+    return tool_calls
+
+
+def _parse_openai_tool_calls(message: dict[str, Any]) -> list[LocalTextToolCall]:
     tool_calls_raw = message.get("tool_calls") or []
     tool_calls: list[LocalTextToolCall] = []
     for item in tool_calls_raw:
@@ -269,24 +305,24 @@ def _urlopen_without_proxy(
     return opener.open(request, timeout=timeout)
 
 
-def run_local_text_brain(
+def _urlopen_with_local_text_proxy_policy(
+    request: urllib.request.Request, *, timeout: float, base_url: str
+) -> urllib.response.addinfourl:
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    try:
+        if host in {"127.0.0.1", "localhost", "::1"} or ipaddress.ip_address(host).is_private:
+            return _urlopen_without_proxy(request, timeout=timeout)
+    except ValueError:
+        pass
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
+def _run_ollama_local_text_brain(
     agent_config: AgentConfig,
     *,
     user_text: str,
-    language: str = "zh-CN",
+    language: str,
 ) -> LocalTextDecision:
-    backend = agent_config.backend
-    if backend != "local_text_ollama":
-        return LocalTextDecision(
-            ok=False,
-            backend=backend,
-            model=agent_config.local_text_model,
-            text_reply="",
-            tool_calls=[],
-            raw_message={},
-            error=f"unsupported_local_text_backend:{backend}",
-        )
-
     payload = {
         "model": agent_config.local_text_model,
         "stream": False,
@@ -306,7 +342,11 @@ def run_local_text_brain(
         method="POST",
     )
     try:
-        with _urlopen_without_proxy(request, timeout=20) as response:
+        with _urlopen_with_local_text_proxy_policy(
+            request,
+            timeout=20,
+            base_url=agent_config.local_text_base_url,
+        ) as response:
             body = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         try:
@@ -315,7 +355,7 @@ def run_local_text_brain(
             detail = str(exc)
         return LocalTextDecision(
             ok=False,
-            backend=backend,
+            backend=agent_config.backend,
             model=agent_config.local_text_model,
             text_reply="",
             tool_calls=[],
@@ -325,7 +365,7 @@ def run_local_text_brain(
     except (TimeoutError, URLError, OSError) as exc:
         return LocalTextDecision(
             ok=False,
-            backend=backend,
+            backend=agent_config.backend,
             model=agent_config.local_text_model,
             text_reply="",
             tool_calls=[],
@@ -338,7 +378,7 @@ def run_local_text_brain(
     except json.JSONDecodeError as exc:
         return LocalTextDecision(
             ok=False,
-            backend=backend,
+            backend=agent_config.backend,
             model=agent_config.local_text_model,
             text_reply="",
             tool_calls=[],
@@ -358,9 +398,136 @@ def run_local_text_brain(
             content = normalized_text
     return LocalTextDecision(
         ok=True,
-        backend=backend,
+        backend=agent_config.backend,
         model=agent_config.local_text_model,
         text_reply=content,
         tool_calls=tool_calls,
         raw_message=message if isinstance(message, dict) else {},
+    )
+
+
+def _run_openai_compatible_local_text_brain(
+    agent_config: AgentConfig,
+    *,
+    user_text: str,
+    language: str,
+) -> LocalTextDecision:
+    payload = {
+        "model": agent_config.local_text_model,
+        "messages": [
+            {"role": "user", "content": _build_user_prompt(user_text, language)},
+        ],
+        "tools": _tool_schemas(),
+        "tool_choice": "auto",
+        "temperature": 0.2,
+    }
+    url = _normalize_openai_base_url(agent_config.local_text_base_url) + "/chat/completions"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=_build_headers(agent_config.local_text_api_key),
+        method="POST",
+    )
+    try:
+        with _urlopen_with_local_text_proxy_policy(
+            request,
+            timeout=30,
+            base_url=agent_config.local_text_base_url,
+        ) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = str(exc)
+        return LocalTextDecision(
+            ok=False,
+            backend=agent_config.backend,
+            model=agent_config.local_text_model,
+            text_reply="",
+            tool_calls=[],
+            raw_message={},
+            error=f"openai_http_error:{exc.code}:{detail}",
+        )
+    except (TimeoutError, URLError, OSError) as exc:
+        return LocalTextDecision(
+            ok=False,
+            backend=agent_config.backend,
+            model=agent_config.local_text_model,
+            text_reply="",
+            tool_calls=[],
+            raw_message={},
+            error=f"openai_request_failed:{exc}",
+        )
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        return LocalTextDecision(
+            ok=False,
+            backend=agent_config.backend,
+            model=agent_config.local_text_model,
+            text_reply="",
+            tool_calls=[],
+            raw_message={},
+            error=f"openai_invalid_json:{exc}",
+        )
+
+    choices = data.get("choices") or []
+    message = {}
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = "\n".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict) and str(item.get("type") or "") == "text"
+        )
+    content = str(content or "").strip()
+    tool_calls = _parse_openai_tool_calls(message if isinstance(message, dict) else {})
+    if not tool_calls and content:
+        pseudo_tool, normalized_text = _parse_pseudo_tool_from_text(content)
+        if pseudo_tool is not None:
+            tool_calls = [pseudo_tool]
+            content = ""
+        else:
+            content = normalized_text
+    return LocalTextDecision(
+        ok=True,
+        backend=agent_config.backend,
+        model=agent_config.local_text_model,
+        text_reply=content,
+        tool_calls=tool_calls,
+        raw_message=message if isinstance(message, dict) else {},
+    )
+
+
+def run_local_text_brain(
+    agent_config: AgentConfig,
+    *,
+    user_text: str,
+    language: str = "zh-CN",
+) -> LocalTextDecision:
+    provider = str(agent_config.local_text_provider or "").strip().lower()
+    if provider == "openai_compatible" or agent_config.backend == "local_text_openai_compatible":
+        return _run_openai_compatible_local_text_brain(
+            agent_config,
+            user_text=user_text,
+            language=language,
+        )
+    if provider == "ollama" or agent_config.backend == "local_text_ollama":
+        return _run_ollama_local_text_brain(
+            agent_config,
+            user_text=user_text,
+            language=language,
+        )
+    return LocalTextDecision(
+        ok=False,
+        backend=agent_config.backend,
+        model=agent_config.local_text_model,
+        text_reply="",
+        tool_calls=[],
+        raw_message={},
+        error=f"unsupported_local_text_provider:{provider or 'empty'}",
     )
