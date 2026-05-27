@@ -24,6 +24,22 @@ from src.wakeword_runtime import WakeWordEvent, create_wake_word_gate
 
 DEFAULT_FACTORY = "src.mock_wakeword:factory"
 DEFAULT_WAKE_ACK = "我在，请稍等一下吧"
+DEFAULT_INTRO_MANDARIN = (
+    "你好！我是笨笨同学，中国移动环球智算中心的专属智能导览机器人。"
+    "我可以用粤语、普通话和英文与您交流。今天很高兴在这里为您服务！"
+    "如果您想了解数据中心的任何信息，随时告诉我哦。"
+)
+DEFAULT_INTRO_CANTONESE = (
+    "你好！我係笨笨同學，中國移動環球智算中心嘅專屬智能導覽機械人。"
+    "我可以用粵語、普通話同英文同您交流。今日好高興喺呢度為您服務！"
+    "如果您想了解數據中心嘅任何資訊，隨時同我講哦。"
+)
+DEFAULT_INTRO_ENGLISH = (
+    "Hello! I am Benben, the dedicated intelligent guide robot for China Mobile "
+    "Global Intelligent Computing Center. I can talk with you in Cantonese, Mandarin, "
+    "and English. I am very happy to serve you here today. If you would like to know "
+    "anything about the data center, just let me know."
+)
 DEFAULT_ACTIVE_LED = "green"
 DEFAULT_IDLE_LED = "blue"
 DEFAULT_WAKE_RETRY_DELAY_S = 1.0
@@ -141,6 +157,25 @@ def _start_active_led(adapter: G1Om1Adapter) -> subprocess.Popen[bytes] | None:
     return proc
 
 
+def _wake_language(event: WakeWordEvent) -> str:
+    metadata = getattr(event, "metadata", {}) or {}
+    raw = str(metadata.get("language") or metadata.get("detected_lang") or "").strip().lower()
+    if raw in {"yue", "zh-yue", "cantonese"}:
+        return "zh-YUE"
+    if raw in {"en", "en-us", "en-gb", "english"}:
+        return "en"
+    return "zh-CN"
+
+
+def _wake_intro_text(event: WakeWordEvent) -> str:
+    language = _wake_language(event)
+    if language == "zh-YUE":
+        return os.getenv("INTERRUPT_FRONTGATE_WAKE_INTRO_YUE", DEFAULT_INTRO_CANTONESE).strip() or DEFAULT_INTRO_CANTONESE
+    if language == "en":
+        return os.getenv("INTERRUPT_FRONTGATE_WAKE_INTRO_EN", DEFAULT_INTRO_ENGLISH).strip() or DEFAULT_INTRO_ENGLISH
+    return os.getenv("INTERRUPT_FRONTGATE_WAKE_INTRO_ZH", DEFAULT_INTRO_MANDARIN).strip() or DEFAULT_INTRO_MANDARIN
+
+
 def _local_wake_ack(
     adapter: G1Om1Adapter,
     event: WakeWordEvent,
@@ -150,7 +185,10 @@ def _local_wake_ack(
         return None
 
     if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK", True):
-        reply = os.getenv("INTERRUPT_FRONTGATE_WAKE_ACK_TEXT", DEFAULT_WAKE_ACK).strip() or DEFAULT_WAKE_ACK
+        if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO", True):
+            reply = _wake_intro_text(event)
+        else:
+            reply = os.getenv("INTERRUPT_FRONTGATE_WAKE_ACK_TEXT", DEFAULT_WAKE_ACK).strip() or DEFAULT_WAKE_ACK
         speak_result = adapter.speak(reply)
         print(
             f"[FrontGate] wake_ack wakeword={event.wakeword} reply={reply} ok={speak_result.ok} stdout={speak_result.stdout!r} stderr={speak_result.stderr!r}",

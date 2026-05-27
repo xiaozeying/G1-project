@@ -1064,6 +1064,35 @@ def _query_ack_text(text: str) -> str | None:
     return None
 
 
+def _looks_like_intro_query(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "自我介绍",
+            "自我介紹",
+            "介绍一下你自己",
+            "介紹一下你自己",
+            "介绍你自己",
+            "介紹你自己",
+            "你是谁",
+            "你是誰",
+            "who are you",
+            "introduce yourself",
+        )
+    )
+
+
+def _builtin_intro_reply() -> str:
+    return _localized_text(
+        "你好！我是笨笨同学，中国移动环球智算中心的专属智能导览机器人。我可以用粤语、普通话和英文与您交流。今天很高兴在这里为您服务！如果您想了解数据中心的任何信息，随时告诉我哦。",
+        "你好！我係笨笨同學，中國移動環球智算中心嘅專屬智能導覽機械人。我可以用粵語、普通話同英文同您交流。今日好高興喺呢度為您服務！如果您想了解數據中心嘅任何資訊，隨時同我講哦。",
+        "Hello! I am Benben, the dedicated intelligent guide robot for China Mobile Global Intelligent Computing Center. I can talk with you in Cantonese, Mandarin, and English. I am very happy to serve you here today. If you would like to know anything about the data center, just let me know.",
+    )
+
+
 def _looks_like_local_tool_failure(text: str) -> bool:
     normalized = _normalize_assistant_text(text).lower()
     if not normalized:
@@ -2031,12 +2060,33 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
         return False
     if not decision.ok:
         if offline_singlebox:
+            if _looks_like_intro_query(normalized):
+                _remember_latest_user_text(normalized)
+                try:
+                    await session.interrupt(force=True)
+                except Exception:
+                    LOGGER.debug("offline_singlebox interrupt skipped before builtin intro", exc_info=True)
+                _speak_local_text_reply_fallback(_builtin_intro_reply())
+                return True
+            if _looks_like_vision_query(normalized):
+                _remember_latest_user_text(normalized)
+                try:
+                    await session.interrupt(force=True)
+                except Exception:
+                    LOGGER.debug("offline_singlebox interrupt skipped before direct vision fallback", exc_info=True)
+                reply = await InterruptAssistant().ask_camera_vision(normalized)
+                _speak_local_text_reply_fallback(reply)
+                return True
             try:
                 await session.interrupt(force=True)
             except Exception:
                 LOGGER.debug("offline_singlebox interrupt skipped after local_text failure", exc_info=True)
-            _speak_local_text_reply_fallback(_offline_singlebox_unavailable_reply())
-            return True
+            LOGGER.warning(
+                "offline_singlebox local_text_decision failed without builtin fallback: error=%s user_text=%r",
+                decision.error,
+                normalized,
+            )
+            return False
         return False
     if not decision.tool_calls and LOCAL_TEXT_DECISION_MODE != "prefer_all" and not offline_singlebox:
         return False
