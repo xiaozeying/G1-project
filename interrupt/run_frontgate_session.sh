@@ -2,7 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${ROOT_DIR}/.venv"
 LOG_DIR="${ROOT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/frontgate.log"
@@ -16,13 +15,9 @@ ORIG_WAKE_WORD_FACTORY="${INTERRUPT_WAKE_WORD_FACTORY-}"
 ORIG_SESSION_COMMAND="${INTERRUPT_FRONTGATE_SESSION_COMMAND-}"
 ORIG_SESSION_TIMEOUT="${INTERRUPT_FRONTGATE_SESSION_TIMEOUT-}"
 
-if [[ -z "${FRONTGATE_PYTHON}" && ! -d "${VENV_DIR}" ]]; then
-  echo "未找到虚拟环境，请先执行 ./bootstrap.sh"
-  exit 1
-fi
-
 if [[ -z "${FRONTGATE_PYTHON}" ]]; then
-  source "${VENV_DIR}/bin/activate"
+  source "${ROOT_DIR}/libexec/python_env.sh"
+  interrupt_activate_python_env "${ROOT_DIR}"
   FRONTGATE_PYTHON="python"
 fi
 

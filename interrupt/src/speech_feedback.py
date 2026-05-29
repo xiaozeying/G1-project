@@ -105,6 +105,10 @@ class SpeechFeedbackRouter:
             LOGGER.info("%s: mode=disabled", skip_log_prefix)
             return False
         if mode == MODE_TRANSPORT_ONLY:
+            # Even when we skip local mirror playback, the same reply is still
+            # emitted over the RTC transport and may be picked back up by the
+            # robot microphone in the field. Guard it as self-playback.
+            note_local_playback(normalized, language=language)
             LOGGER.info("%s: mode=transport_only", skip_log_prefix)
             return False
         if mode != MODE_OM1_MIRROR:

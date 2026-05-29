@@ -24,3 +24,11 @@ for name in ("vllm", "transformers", "torch"):
     module = importlib.import_module(name)
     print(f"{name}={module.__version__}")
 PY
+
+if [[ -x "${ROOT_DIR}/run_backport_minicpm_v46_vllm_lab.sh" ]]; then
+  MINICPM_VLLM_LAB_VENV_DIR="${LAB_VENV_DIR}" \
+    "${ROOT_DIR}/run_backport_minicpm_v46_vllm_lab.sh" || {
+      echo "WARN: MiniCPM-V 4.6 backport step did not complete."
+      echo "      You can rerun it manually with ./run_backport_minicpm_v46_vllm_lab.sh"
+    }
+fi

@@ -1,0 +1,15 @@
+[Unit]
+Description=Interrupt Robot Frontgate (Docker Compose)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/unitree/HongTu/interrupt
+ExecStart=/home/unitree/HongTu/interrupt/deploy/compose/composectl.sh --env-file /home/unitree/HongTu/interrupt/deploy/compose/env.robot -f /home/unitree/HongTu/interrupt/deploy/compose/docker-compose.robot.yaml up -d --build robot-frontgate
+ExecStop=/home/unitree/HongTu/interrupt/deploy/compose/composectl.sh --env-file /home/unitree/HongTu/interrupt/deploy/compose/env.robot -f /home/unitree/HongTu/interrupt/deploy/compose/docker-compose.robot.yaml stop robot-frontgate
+TimeoutStartSec=0
+
+[Install]
+WantedBy=default.target

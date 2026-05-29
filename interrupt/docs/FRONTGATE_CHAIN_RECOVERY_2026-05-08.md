@@ -22,10 +22,8 @@
 - 语音触发上身动作和 LED
 - idle 超时回前门
 - 房间内三语回复统一从外接 USB 音频设备出声
-
-当前不在本轮恢复硬目标内：
-
-- VLM 视觉问答
+- 视觉问答
+- 导航执行
 
 ## 当前仓库与外部依赖边界
 
@@ -89,18 +87,51 @@
 - 房间内 assistant 三语回复统一从外接 USB 音频设备出声
 - 不要同时走 transport 回放和本地镜像，避免双播
 
-如果要统一三语都从外接 USB 音频出声，当前推荐口径是：
+如果要让恢复后的默认值稳定不分叉，当前推荐口径改为：
 
-- `INTERRUPT_ASSISTANT_AUDIO_MODE=om1_mirror`
-- `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=om1_mirror`
-- `INTERRUPT_RTC_SUBSCRIBE_AUDIO=0`
+- `INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only`
+- `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=transport_only`
+- `INTERRUPT_RTC_SUBSCRIBE_AUDIO=1`
+- `INTERRUPT_RTC_OUTPUT_DEVICE=pulse`
 - `PULSE_SINK=alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo`
 
 解释：
 
-- `om1_mirror` 说的是播放触发链路，不等于机身喇叭
-- 只要 `PULSE_SINK` 指向外接 USB，OM1 本地播放最终物理输出仍然是外接 USB 音频
-- 关闭 `INTERRUPT_RTC_SUBSCRIBE_AUDIO` 的目的，是避免房间回复同时走 RTC 回放和本地镜像，造成双播
+- 房间回复统一走 RTC 下行播放
+- 机器人恢复后不再需要现场手工切换 `om1_mirror / transport_only`
+- `rtc_endpoint` 可以拿到播放参考，更利于 AEC 收口
+- 这样可以避免 `OM1` 本地播报再次被麦克风听回，触发“自己重复动作 / 自己跟自己说话”
+
+恢复完成后，这个默认值要直接按机器人当前生效配置核验，不要只看仓库快照：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n '^INTERRUPT_ASSISTANT_AUDIO_MODE=\\|^INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=\\|^INTERRUPT_RTC_SUBSCRIBE_AUDIO=\\|^INTERRUPT_RTC_OUTPUT_DEVICE=\\|^PULSE_SINK=' /home/unitree/HongTu/interrupt/.env.local"
+```
+
+预期至少成立：
+
+- `INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only`
+- `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=transport_only`
+- `INTERRUPT_RTC_SUBSCRIBE_AUDIO=1`
+
+另外，恢复收口不只看音频变量，还要确认 active `agent.py` 没把三语言自适应退化掉：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n 'def _detect_reply_language\\|def _detect_forced_reply_language\\|def _preferred_reply_language\\|reply language mode updated\\|reply language detected' /home/unitree/HongTu/interrupt/src/agent.py"
+```
+
+如果机器人当前代码只剩“`_detect_reply_language -> return REPLY_LANGUAGE_MANDARIN`”，那就表示恢复仍未完成，后续现场会表现成只有普通话，不具备普通话 / 粤语 / 英语自适应。
+
+同样要确认 active `agent.py` 没把视觉问答入口丢掉：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n 'ask_camera_vision\\|camera vision query succeeded\\|VisionChatConfig\\|ask_camera_question' /home/unitree/HongTu/interrupt/src/agent.py"
+```
+
+如果这条为空，常见根因不是视觉文件完全缺失，而是恢复时误用了瘦版 `agent.py`，导致视觉模块还在磁盘上，主会话入口却没接回去。
 
 ### 2. 前门房间实时参数
 
@@ -223,11 +254,13 @@
 
 处理：
 
-- 如果目标是“三语都统一从外接 USB 音频单路出声”
-- 用：
-  - `INTERRUPT_ASSISTANT_AUDIO_MODE=om1_mirror`
-  - `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=om1_mirror`
-  - `INTERRUPT_RTC_SUBSCRIBE_AUDIO=0`
+- 当前恢复文档已统一改成 RTC 主播报默认值：
+  - `INTERRUPT_ASSISTANT_AUDIO_MODE=transport_only`
+  - `INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=transport_only`
+  - `INTERRUPT_RTC_SUBSCRIBE_AUDIO=1`
+- 恢复完成后追加核验：
+  - active `.env.local` 仍是 RTC 主播报默认值
+  - active `src/agent.py` 仍保留三语言自适应，而不是退化成固定普通话
 
 ### 8. `frontgate_room_session.py` 用了现场不存在的方法
 
@@ -256,6 +289,29 @@
 - 复杂 shell 字面量改动尽量在机器人交互 shell 内直接修
 - 不要通过多层 shell 引号转发复杂 `${...}` 模板
 
+### 10. 文件同步到了错误目录，service 看起来正常但运行代码没更新
+
+表现：
+
+- `interrupt-frontgate.service` 能启动
+- 但 `src/agent.py` 里查不到 `ask_camera_vision`
+- 或查不到三语言逻辑
+- 同时 `/home/unitree/HongTu/interrupt/` 根目录下出现了 `agent.py`、`vision_chat.py`、`settings.py`、`vlm_smoke_test.py`
+
+根因：
+
+- 同步目标写成了 `...:/home/unitree/HongTu/interrupt/`
+- 而不是分别写进 `src/`、`tools/`
+
+处理：
+
+- 立即把根目录误落文件挪回：
+  - `src/`
+  - `tools/`
+- 然后重新：
+  - `python3 -m py_compile ...`
+  - `systemctl --user restart interrupt-frontgate.service`
+
 ## 当前建议保留到仓库里的关键文件
 
 - `interrupt/run_robot_frontgate_session.sh`
@@ -265,12 +321,33 @@
 - `interrupt/src/om1_wakeword_gate.py`
 - `interrupt/src/g1_om1_adapter.py`
 - `interrupt/src/agent.py`
+- `interrupt/src/settings.py`
+- `interrupt/src/vision_chat.py`
+- `interrupt/src/local_text_brain.py`
+- `interrupt/src/navigation_intents.py`
+- `interrupt/src/safe_action_gateway.py`
+- `interrupt/src/safe_action_middleware.py`
+- `interrupt/src/cantonese_tts.py`
+- `interrupt/src/tts_mute_state.py`
 - `interrupt/tools/check_env.py`
 - `interrupt/tools/frontgate_regression_test.py`
+- `interrupt/tools/resolve_vlm_runtime.py`
+- `interrupt/tools/vlm_smoke_test.py`
+- `interrupt/tools/vlm_backend_probe.py`
+- `interrupt/tools/vlm_compare_matrix.py`
+- `interrupt/tools/safe_navigation_gateway_smoke.py`
 - `interrupt/README.md`
 - `interrupt/PROJECT_PROGRESS.md`
 - `interrupt/BOARD_UPGRADE_RESTORE_2026-04-30.md`
 - `interrupt/docs/ROBOT_TEST_READY_2026-05-07.md`
+- `interrupt/run_offline_vlm_smoke.sh`
+- `interrupt/run_local_offline_vlm_validation.sh`
+- `interrupt/run_robot_offline_vlm_validation.sh`
+- `interrupt/config/vlm_server_profiles.example.env`
+- `interrupt/config/vlm_eval_matrix.example.json`
+- `interrupt/config/vlm_eval_matrix.local_baseline.json`
+- `interrupt/config/vlm_eval_matrix.qwen_vs_gemma.json`
+- `interrupt/config/vlm_eval_matrix.qwen3b_vs_gemma.json`
 - `g1-wakeword/`
 
 ## 当前建议的机器人核验命令
@@ -314,5 +391,7 @@ grep -aE 'OM1 本地播报 assistant 回复成功|专用粤语 TTS 播报成功|
 - 前门能播报 `我在，请稍等一下吧`
 - 房间 ready 能播报 `现在可以了`
 - 房间内三语回复都能从外接 USB 音频设备稳定出声
+- `src/agent.py` 里仍有 `ask_camera_vision`
+- 视觉 / VLM 文件在 `src/`、`tools/` 正确目录
 - 动作 / LED 正常
 - idle 超时后能回前门

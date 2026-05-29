@@ -31,6 +31,7 @@ from src.navigation_intents import (
     looks_like_saved_locations_query,
 )
 from src.safe_action_gateway import evaluate_action_safety, evaluate_navigation_safety
+from src.safe_action_middleware import precheck_body_action, precheck_navigation
 from src.news import query_news
 from src.local_text_brain import LocalTextToolCall, run_local_text_brain
 from src.speech_feedback import SpeechFeedbackRouter
@@ -1622,6 +1623,10 @@ def _classify_fastpath_command(text: str) -> tuple[str, str, str] | None:
         color = _extract_led_color(text)
         if color is not None:
             return ("led", color, f"led:{color}")
+    if _looks_like_vision_query(text):
+        question = _normalize_assistant_text(text)
+        if question:
+            return ("vision", question, f"vision:{question}")
     return None
 
 
@@ -1724,75 +1729,44 @@ async def _execute_led_color_local(color: str, *, source: str) -> str:
 
 
 async def _evaluate_action_safety_local(action: str) -> tuple[bool, str]:
-    result = await asyncio.to_thread(
-        ask_camera_question,
+    decision = await precheck_body_action(
         VISION_CHAT_CONFIG,
-        question="请检查前方空间、人体接近情况，以及手臂活动范围附近是否有遮挡物。",
+        action=action,
         reply_language=REPLY_LANGUAGE_MANDARIN,
-        structured=True,
-    )
-    if not result.ok:
-        LOGGER.warning(
-            "safe action gateway vision precheck failed: action=%s error=%s device=%s",
-            action,
-            result.error,
-            result.camera_device,
-        )
-        return False, _localized_text(
+        unavailable_message=_localized_text(
             "我现在拿不到可靠的前方安全观察结果，所以先不执行这个动作。",
             "我而家攞唔到可靠嘅前方安全觀察結果，所以先唔做呢個動作。",
             "I can't get a reliable safety observation right now, so I won't execute that action yet.",
-        )
-    decision = evaluate_action_safety(action, result.observation)
-    LOGGER.info(
-        "safe action gateway decision: action=%s allowed=%s code=%s observation=%r",
-        action,
-        decision.allowed,
-        decision.reason_code,
-        result.observation,
+        ),
+        denied_message=_localized_text(
+            "基于当前前方安全观察，我先不执行这个动作。",
+            "基于而家嘅前方安全观察，我先唔执行呢个动作。",
+            "Based on the current safety observation, I won't execute that motion yet.",
+        ),
     )
     if decision.allowed:
         return True, ""
-    return False, _localized_text(
-        decision.reason_text,
-        "基于而家嘅前方安全观察，我先唔执行呢个动作。",
-        "Based on the current safety observation, I won't execute that motion yet.",
-    )
+    return False, decision.user_message
 
 
 async def _evaluate_navigation_safety_local() -> tuple[bool, str]:
-    result = await asyncio.to_thread(
-        ask_camera_question,
+    decision = await precheck_navigation(
         VISION_CHAT_CONFIG,
-        question="请检查前方空间是否通畅、是否有人离得太近，以及当前画面是否足够清晰。",
         reply_language=REPLY_LANGUAGE_MANDARIN,
-        structured=True,
-    )
-    if not result.ok:
-        LOGGER.warning(
-            "safe navigation gateway vision precheck failed: error=%s device=%s",
-            result.error,
-            result.camera_device,
-        )
-        return False, _localized_text(
+        unavailable_message=_localized_text(
             "我现在拿不到可靠的前方导航安全观察结果，所以先不启动导航。",
             "我而家攞唔到可靠嘅前方導航安全觀察結果，所以先唔啟動導航。",
             "I can't get a reliable front navigation safety observation right now, so I won't start navigation yet.",
-        )
-    decision = evaluate_navigation_safety(result.observation)
-    LOGGER.info(
-        "safe navigation gateway decision: allowed=%s code=%s observation=%r",
-        decision.allowed,
-        decision.reason_code,
-        result.observation,
+        ),
+        denied_message=_localized_text(
+            "基于当前前方安全观察，我先不启动导航。",
+            "基于而家嘅前方安全观察，我先唔启动导航。",
+            "Based on the current safety observation, I won't start navigation yet.",
+        ),
     )
     if decision.allowed:
         return True, ""
-    return False, _localized_text(
-        decision.reason_text,
-        "基于而家嘅前方安全观察，我先唔启动导航。",
-        "Based on the current safety observation, I won't start navigation yet.",
-    )
+    return False, decision.user_message
 
 
 async def _execute_action_local(action: str, *, source: str) -> str:
@@ -1847,6 +1821,20 @@ async def _execute_direct_text_local(text: str, *, source: str) -> str:
         _resume_active_listen_led_delayed(f"{source}_execute_robot_command_text")
         return result.stdout or "direct command executed"
     return f"Direct command failed: {result.stderr or result.stdout or result.returncode}"
+
+
+async def _execute_vision_local(question: str, *, source: str) -> str:
+    normalized_question = _normalize_assistant_text(question)
+    if not normalized_question:
+        return _localized_text(
+            "我刚才没有听清你的视觉问题。",
+            "我啱啱未聽清你個視覺問題。",
+            "I didn't catch your visual question just now.",
+        )
+    _remember_latest_user_text(normalized_question)
+    await asyncio.to_thread(_speak_local_tool_ack, _query_ack_text(normalized_question) or normalized_question)
+    reply = await InterruptAssistant().ask_camera_vision(normalized_question)
+    return _normalize_assistant_text(reply)
 
 
 async def _list_saved_locations_local() -> str:
@@ -2103,18 +2091,26 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
                 blocked_tool_names,
                 normalized,
             )
-        if not allowed_tool_calls:
+        normalized_text_reply = _normalize_assistant_text(decision.text_reply)
+        if not allowed_tool_calls and normalized_text_reply:
+            decision = dataclasses.replace(
+                decision,
+                tool_calls=[],
+                text_reply=normalized_text_reply,
+            )
+        elif not allowed_tool_calls:
             try:
                 await session.interrupt(force=True)
             except Exception:
                 LOGGER.debug("offline_singlebox interrupt skipped after out-of-scope request", exc_info=True)
             _speak_local_text_reply_fallback(_offline_singlebox_limit_reply())
             return True
-        decision = dataclasses.replace(
-            decision,
-            tool_calls=allowed_tool_calls[:2],
-            text_reply="",
-        )
+        else:
+            decision = dataclasses.replace(
+                decision,
+                tool_calls=allowed_tool_calls[:2],
+                text_reply="",
+            )
 
     _remember_latest_user_text(normalized)
     try:
@@ -2893,6 +2889,27 @@ def _wire_debug_events(session: AgentSession) -> None:
         if kind == "led":
             asyncio.create_task(_execute_led_color_local(payload, source="fastpath"))
             return
+        if kind == "vision":
+            async def _run_vision_fastpath() -> None:
+                reply = await _execute_vision_local(payload, source="fastpath")
+                if not reply:
+                    return
+                try:
+                    session.say(
+                        reply,
+                        allow_interruptions=SETTINGS.agent.allow_interruptions,
+                        add_to_chat_ctx=True,
+                    )
+                except RuntimeError as exc:
+                    LOGGER.warning(
+                        "vision fastpath session.say unavailable, fallback to local speak: error=%s text=%r",
+                        exc,
+                        reply,
+                    )
+                    _speak_local_text_reply_fallback(reply)
+
+            asyncio.create_task(_run_vision_fastpath())
+            return
 
     async def _try_handle_local_query_ack(text: str) -> None:
         if not ENABLE_LOCAL_QUERY_PRE_ACK:
@@ -2996,7 +3013,7 @@ def _wire_debug_events(session: AgentSession) -> None:
             if is_final:
                 interrupted_while_speaking["value"] = False
             return
-        if local_playback_guard_active() and session.agent_state == "speaking":
+        if local_playback_guard_active():
             LOGGER.info(
                 "user_input_transcribed ignored during local playback guard: final=%s text=%r",
                 is_final,
@@ -3045,7 +3062,7 @@ def _wire_debug_events(session: AgentSession) -> None:
             if _is_noise_only_transcript(text):
                 LOGGER.info("conversation_item_added ignored noise-only user text=%r", text)
                 return
-            if local_playback_guard_active() and session.agent_state == "speaking":
+            if local_playback_guard_active():
                 LOGGER.info(
                     "conversation_item_added ignored during local playback guard text=%r",
                     text,

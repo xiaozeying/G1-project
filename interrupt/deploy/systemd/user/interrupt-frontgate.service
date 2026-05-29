@@ -2,6 +2,8 @@
 Description=Interrupt Robot Frontgate
 After=network-online.target
 Wants=network-online.target
+After=sound.target pulseaudio.service pipewire-pulse.service
+Wants=sound.target
 StartLimitIntervalSec=0
 
 [Service]

@@ -1,5 +1,49 @@
 # 2026-04-27 机器人 USB 对话链路调试交接
 
+## 2026-05-20 补充说明
+
+后续如果继续联调机器人，语音团队要默认遵守这个分工边界：
+
+- `interrupt` 负责语音链、工具决策、导航接口层
+- 导航工作区本身不属于 `interrupt` 收尾范围
+
+特别是以下问题，不再默认归到语音链：
+
+- `nav2_msgs` 缺失
+- 导航 overlay `setup.bash` 失效
+- `move_base` / `NavigateToPose` 服务端没起来
+- waypoint / map 文件由导航侧维护
+
+语音链只需要保证：
+
+- 能正确生成导航工具调用
+- 能把请求发到统一导航对接面
+- 后端失败时返回清晰语义，不误触发运动
+
+另外，本轮还补了前门音频启动收口：
+
+- `run_robot_frontgate_session.sh` 现在会：
+  - 等待 Pulse source/sink 就绪
+  - 自动修正默认 USB sink/source
+  - 启动无声 TTS 预热
+  - 失败自动重试一次
+- 健康结果会落盘到：
+  - `/home/unitree/HongTu/interrupt/logs/audio-startup-health.log`
+
+后续现场若出现“开机首播没声音”，优先先查：
+
+```bash
+tail -n 20 /home/unitree/HongTu/interrupt/logs/audio-startup-health.log
+```
+
+若看到：
+
+```text
+status=ok
+```
+
+说明启动音频自愈已通过；此时再继续查唤醒词或房间链，而不是先怀疑 USB 播放器没起来。
+
 ## 当前收尾状态
 
 - 机器人测试进程已清理：

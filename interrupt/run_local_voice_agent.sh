@@ -2,17 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${ROOT_DIR}/.venv"
 LOG_DIR="${ROOT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/agent.log"
 
-if [[ ! -d "${VENV_DIR}" ]]; then
-  echo "未找到虚拟环境，请先执行 ./bootstrap.sh"
-  exit 1
-fi
-
-source "${VENV_DIR}/bin/activate"
+source "${ROOT_DIR}/libexec/python_env.sh"
+interrupt_activate_python_env "${ROOT_DIR}"
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
 echo "===== $(date '+%F %T') run_local_voice_agent.sh ====="
@@ -63,9 +58,10 @@ if [[ -z "${GEMINI_API_KEY:-}" ]]; then
 fi
 
 cd "${ROOT_DIR}"
+PYTHON_BIN="${INTERRUPT_PYTHON_BIN:-python}"
 
 if [[ $# -gt 0 ]]; then
-  exec python -m src.agent "$@"
+  exec "${PYTHON_BIN}" -m src.agent "$@"
 fi
 
 ARGS=(console)
@@ -86,4 +82,4 @@ if [[ "${INTERRUPT_RECORD:-}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   ARGS+=(--record)
 fi
 
-exec python -m src.agent "${ARGS[@]}"
+exec "${PYTHON_BIN}" -m src.agent "${ARGS[@]}"

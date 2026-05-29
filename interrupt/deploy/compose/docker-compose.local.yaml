@@ -1,0 +1,63 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: hongtu-livekit
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --dev
+      - --bind
+      - ${LIVEKIT_BIND_ADDRESS:-0.0.0.0}
+      - --node-ip
+      - ${LIVEKIT_NODE_IP:-127.0.0.1}
+      - --rtc.node_ip.ipv4
+      - ${LIVEKIT_RTC_NODE_IP_IPV4:-127.0.0.1}
+      - --rtc.force_tcp=${LIVEKIT_RTC_FORCE_TCP:-false}
+      - --rtc.allow_tcp_fallback=${LIVEKIT_RTC_ALLOW_TCP_FALLBACK:-true}
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  room-agent:
+    build:
+      context: ${HOST_REPO_ROOT:-../..}
+      dockerfile: interrupt/deploy/compose/Dockerfile
+    image: hongtu/interrupt-runtime:latest
+    container_name: hongtu-room-agent
+    restart: unless-stopped
+    depends_on:
+      - livekit
+    network_mode: host
+    working_dir: ${HOST_INTERRUPT_DIR}
+    env_file:
+      - ${HOST_INTERRUPT_ENV_FILE}
+    environment:
+      INTERRUPT_PYTHON_BIN: /opt/interrupt-venv/bin/python
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ${HOST_REPO_ROOT}:${HOST_REPO_ROOT}
+    command:
+      - bash
+      - -lc
+      - cd "${HOST_INTERRUPT_DIR}" && ./run_room_agent.sh
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hongtu-ollama
+    restart: unless-stopped
+    network_mode: host
+    profiles:
+      - ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ${HOST_OLLAMA_DIR}:/root/.ollama
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"

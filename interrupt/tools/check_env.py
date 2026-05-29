@@ -162,6 +162,14 @@ def check_env_var() -> None:
         f"{os.getenv('INTERRUPT_G1_NAV_LOCATIONS_FILE') or 'EMPTY'}"
     )
     print(
+        "  INTERRUPT_G1_3D_NAV_ROOT -> "
+        f"{os.getenv('INTERRUPT_G1_3D_NAV_ROOT') or 'AUTO'}"
+    )
+    print(
+        "  INTERRUPT_G1_NAV_BRIDGE_RUNNER -> "
+        f"{os.getenv('INTERRUPT_G1_NAV_BRIDGE_RUNNER') or 'AUTO'}"
+    )
+    print(
         "  INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY -> "
         f"{os.getenv('INTERRUPT_ENABLE_SAFE_ACTION_GATEWAY') or '0'}"
     )

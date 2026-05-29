@@ -1,0 +1,44 @@
+services:
+  robot-frontgate:
+    build:
+      context: ${HOST_REPO_ROOT:-../..}
+      dockerfile: interrupt/deploy/compose/Dockerfile
+    image: hongtu/interrupt-runtime:latest
+    container_name: hongtu-robot-frontgate
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    privileged: true
+    working_dir: ${HOST_INTERRUPT_DIR}
+    env_file:
+      - ${HOST_INTERRUPT_ENV_FILE}
+    environment:
+      HOME: /home/unitree
+      XDG_RUNTIME_DIR: ${HOST_XDG_RUNTIME_DIR}
+      PULSE_SERVER: unix:${HOST_XDG_RUNTIME_DIR}/pulse/native
+      PYTHONUNBUFFERED: "1"
+      INTERRUPT_PYTHON_BIN: /opt/interrupt-venv/bin/python
+      INTERRUPT_FRONTGATE_PYTHON: ${HOST_WAKEWORD_ENV_DIR}/bin/python
+      INTERRUPT_G1_OM1_PYTHON: ${HOST_OM1_DIR}/.venv-g1/bin/python
+      INTERRUPT_G1_DIRECT_COMMAND_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_direct_command_fallback.py
+      INTERRUPT_G1_FEEDBACK_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_watchdog_feedback.py
+      WAKEWORD_SCRIPT: ${HOST_WAKEWORD_DIR}/wakeword_adaptive.py
+    volumes:
+      - ${HOST_REPO_ROOT}:${HOST_REPO_ROOT}
+      - ${HOST_OM1_DIR}:${HOST_OM1_DIR}
+      - ${HOST_WAKEWORD_DIR}:${HOST_WAKEWORD_DIR}
+      - ${HOST_WAKEWORD_ENV_DIR}:${HOST_WAKEWORD_ENV_DIR}:ro
+      - ${HOST_XDG_RUNTIME_DIR}/pulse:${HOST_XDG_RUNTIME_DIR}/pulse
+      - ${HOST_PULSE_COOKIE}:${HOST_PULSE_COOKIE}:ro
+      - /dev/snd:/dev/snd
+      - /dev:/dev
+    devices:
+      - ${HOST_CAMERA_DEVICE}:${HOST_CAMERA_DEVICE}
+    command:
+      - bash
+      - -lc
+      - cd "${HOST_INTERRUPT_DIR}" && ./run_robot_frontgate_session.sh
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"

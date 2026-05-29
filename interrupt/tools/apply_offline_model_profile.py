@@ -52,11 +52,11 @@ def _baseline_profile(mode: str) -> dict[str, str]:
         "INTERRUPT_AGENT_LOCAL_TEXT_PROVIDER": "ollama",
         "INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL": _env(
             "INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL",
-            "http://192.168.100.48:11434" if mode == "robot" else "http://127.0.0.1:11434",
+            "http://127.0.0.1:11434",
         ),
         "INTERRUPT_AGENT_LOCAL_TEXT_MODEL": _env(
             "INTERRUPT_AGENT_LOCAL_TEXT_MODEL",
-            "qwen2.5:7b",
+            "qwen2.5:1.5b",
         ),
         "INTERRUPT_ROBOT_OFFLINE_VLM_PROVIDER": _env(
             "INTERRUPT_ROBOT_OFFLINE_VLM_PROVIDER",
@@ -64,7 +64,7 @@ def _baseline_profile(mode: str) -> dict[str, str]:
         ),
         "INTERRUPT_ROBOT_OFFLINE_VLM_BASE_URL": _env(
             "INTERRUPT_ROBOT_OFFLINE_VLM_BASE_URL",
-            "http://192.168.100.48:11434/v1",
+            "http://127.0.0.1:11434/v1",
         ),
         "INTERRUPT_ROBOT_OFFLINE_VLM_MODEL": _env(
             "INTERRUPT_ROBOT_OFFLINE_VLM_MODEL",
@@ -101,6 +101,15 @@ def _minicpm_profile(mode: str) -> dict[str, str]:
                 f"http://{host}:8000/v1",
             ),
             "INTERRUPT_ROBOT_OFFLINE_VLM_MODEL": _env(
+                "INTERRUPT_ROBOT_OFFLINE_MINICPM_MODEL",
+                "MiniCPM-V-4_6",
+            ),
+            "INTERRUPT_ROBOT_OFFLINE_MINICPM_PROVIDER": "openai_compatible",
+            "INTERRUPT_ROBOT_OFFLINE_MINICPM_BASE_URL": _env(
+                "INTERRUPT_ROBOT_OFFLINE_MINICPM_BASE_URL",
+                f"http://{host}:8000/v1",
+            ),
+            "INTERRUPT_ROBOT_OFFLINE_MINICPM_MODEL": _env(
                 "INTERRUPT_ROBOT_OFFLINE_MINICPM_MODEL",
                 "MiniCPM-V-4_6",
             ),

@@ -4,7 +4,50 @@
 
 补充更新：2026-05-27
 
+补充更新：2026-05-29
+
 这份文档记录当前已经在机器人 `192.168.100.30` 上跑通的整条语音链恢复口径，目标是下次刷机或迁移时，不再靠现场回忆逐段补。
+
+## 2026-05-29 最新恢复结论
+
+截至 `2026-05-29`，当前建议直接按下面的目标态恢复，不要再回到多路本地播报混用的旧口径：
+
+- 前门负责唤醒
+- 唤醒后前门释放 USB 麦
+- 房间 `rtc-endpoint` 接管输入输出
+- `room-agent` 通过 RTC 播报 `现在可以了`
+- 房间内回复统一优先走 RTC 单路播报
+- `offline_singlebox` 下支持三语自适应基础对答、动作、灯光、视觉
+- 短插话 `Yeah / I. / OK / 嗯 / 好` 默认忽略，不触发新回复
+- 人设统一为：
+  - 中文：`笨笨同学`
+  - 粤语：`笨笨同學`
+  - 英文：`BenBen`
+- 任何身份类回复都不应再出现：
+  - `Qwen`
+  - `通义`
+  - `阿里云`
+  - `language model`
+
+当前推荐的一键落地顺序是：
+
+1. 把仓库恢复到 `/data/HongTu`
+2. 建好兼容软链 `/home/unitree/HongTu -> /data/HongTu`
+3. 运行：
+
+```bash
+cd /data/HongTu/interrupt
+python3 deploy_fix.py
+```
+
+如果是机器人本机刚刷好、还没装完环境，则先运行：
+
+```bash
+cd /data/HongTu/interrupt
+./restore_robot_voice_chain.sh
+```
+
+恢复完成后再用 `deploy_fix.py` 做一次增量同步和服务重启。
 
 ## 恢复覆盖边界说明
 
@@ -16,6 +59,7 @@
 - 安装并重启 `interrupt-frontgate.service`
 - 安装并重启 `interrupt-livekit.service`（本地 LiveKit 常驻）
 - 验证前门日志、LiveKit 端口、服务状态
+- 通过 `deploy_fix.py` 把当前仓库内的关键运行文件同步到机器人
 
 **不在本文档覆盖范围内：**
 
@@ -23,6 +67,16 @@
 - 房间会话内的 agent 侧逻辑（由 `frontgate_room_session.py` 负责）
 
 现场曾出现的典型卡点：按文档恢复后前门唤醒链正常，但房间会话推进时卡住——根因是本地 LiveKit 未常驻（`127.0.0.1:7880` 未监听）。补充 `interrupt-livekit.service` 后已解决。Gemini Live 外网握手超时属于更上游问题，不在本地恢复链范围内。
+
+2026-05-29 新增的两个高频卡点：
+
+- 前门没有先释放 USB 麦，导致房间 `rtc-endpoint` 起不来
+- 播报链混用了 RTC 和 OM1，本地麦又把扬声器听回去，表现成“自己跟自己说话”
+
+当前这两个问题的收口口径已经固定：
+
+- 前门唤醒后必须先 handoff 再释放设备
+- 房间 reply 必须以 RTC 单路播报为主
 
 ## 目标能力
 
@@ -57,7 +111,61 @@
   - 导航执行
   - 打断与恢复
   - RTC 单路播报链
-  - 在线增强问答：天气、新闻、开放知识
+- 在线增强问答：天气、新闻、开放知识
+
+补充说明：
+
+- `offline_singlebox` 下允许基础问答
+- 但天气、新闻这类联网能力是否可用，取决于本地脑与联网后端是否真实可达
+- 对于身份类问题，不再允许回答成底层模型身份，必须固定回到笨笨同学口径
+
+## 2026-05-29 恢复后现场必查项
+
+### 1. 服务与端口
+
+```bash
+systemctl --user is-active interrupt-livekit.service
+systemctl --user is-active interrupt-frontgate.service
+ss -ltn | grep ':7880 '
+```
+
+### 2. 前门与房间日志
+
+```bash
+tail -f /data/HongTu/interrupt/logs/robot-frontgate.log
+tail -f /data/HongTu/interrupt/logs/room-agent.log
+tail -f /data/HongTu/interrupt/logs/robot-rtc-endpoint.log
+```
+
+### 3. 期望看到的关键日志
+
+- 前门唤醒后：
+  - `room_ready_ack queued reply=现在可以了 mode=room_agent_rtc`
+- 房间里：
+  - `frontgate ready prompt relay: ok=True text='现在可以了'`
+- 短插话过滤：
+  - `user_input_transcribed ignored brief backchannel`
+- 不再出现：
+  - `我叫Qwen`
+  - `My name is Qwen`
+  - `The robot is in single-box offline mode...` 被无条件反复播报
+
+### 4. 现场最小验收口令
+
+- `你是谁`
+- `你可以做什么`
+- `你会说什么语言`
+- `Can you introduce yourself?`
+- `挥挥手`
+- `把灯变成蓝色`
+- `你前面有什么`
+
+期望结果：
+
+- 身份类回答统一为笨笨同学三语口径
+- 动作和灯光可直接执行
+- 视觉问题有本地回答
+- 不再出现双声道自对话
 
 说明：
 

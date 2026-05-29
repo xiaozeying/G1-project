@@ -56,6 +56,7 @@ package_om1_assets() {
   {
     echo "# OM1 voice assets"
     echo "scripts/external_usb_tts.sh"
+    echo "scripts/bootstrap_g1_runtime_env.sh"
     echo "scripts/g1_direct_command_fallback.py"
     echo "scripts/g1_watchdog_feedback.py"
     echo "scripts/run_g1.sh"
@@ -67,6 +68,13 @@ package_om1_assets() {
   copy_relative "${OM1_DIR}" "scripts/g1_direct_command_fallback.py" "${om1_stage}"
   copy_relative "${OM1_DIR}" "scripts/g1_watchdog_feedback.py" "${om1_stage}"
   copy_relative "${OM1_DIR}" "config/unitree_g1_text_arm_led_external_audio_gemini.json5" "${om1_stage}"
+  if [[ -f "${ROOT_DIR}/restore_assets/om1/bootstrap_g1_runtime_env.sh" ]]; then
+    install -D -m 0755 \
+      "${ROOT_DIR}/restore_assets/om1/bootstrap_g1_runtime_env.sh" \
+      "${om1_stage}/scripts/bootstrap_g1_runtime_env.sh"
+  else
+    warn "缺少文件，跳过: ${ROOT_DIR}/restore_assets/om1/bootstrap_g1_runtime_env.sh"
+  fi
 
   (
     cd "${STAGING_DIR}"

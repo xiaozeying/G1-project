@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     remember.add_argument("--description", default="")
 
     subparsers.add_parser("list-locations", help="List saved navigation locations.")
+    subparsers.add_parser("start-nav-bridge", help="Start the configured local navigation bridge in the background.")
 
     subparsers.add_parser("paths", help="Show resolved helper paths.")
     subparsers.add_parser("check", help="Check whether helper paths exist.")
@@ -71,6 +72,8 @@ def main() -> int:
         result = adapter.remember_location(args.location, description=args.description)
     elif args.command == "list-locations":
         result = adapter.list_saved_locations()
+    elif args.command == "start-nav-bridge":
+        result = adapter.start_navigation_bridge()
     elif args.command == "paths":
         print(json.dumps(adapter.script_paths(), ensure_ascii=False, indent=2))
         return 0

@@ -2,17 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${ROOT_DIR}/.venv"
 LOG_DIR="${ROOT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/robot-rtc-endpoint.log"
+VENV_DIR="${INTERRUPT_VENV_DIR:-${ROOT_DIR}/.venv}"
+DEFAULT_PYTHON_BIN="${VENV_DIR}/bin/python"
 
-if [[ ! -d "${VENV_DIR}" ]]; then
-  echo "未找到虚拟环境，请先执行 ./bootstrap.sh"
-  exit 1
-fi
-
-source "${VENV_DIR}/bin/activate"
+source "${ROOT_DIR}/libexec/python_env.sh"
+interrupt_activate_python_env "${ROOT_DIR}"
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
 echo "===== $(date '+%F %T') run_robot_rtc_endpoint.sh ====="
@@ -43,7 +40,12 @@ load_env_defaults() {
 load_env_defaults "${ROOT_DIR}/.env.local"
 load_env_defaults "${ROOT_DIR}/.env"
 
-RESOLVED_VLM_ENV="$("${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/tools/resolve_vlm_runtime.py" --mode robot --allow-online-fallback)"
+PYTHON_BIN="${INTERRUPT_PYTHON_BIN:-${DEFAULT_PYTHON_BIN}}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "rtc-endpoint python 不可执行: ${PYTHON_BIN}" >&2
+  exit 1
+fi
+RESOLVED_VLM_ENV="$("${PYTHON_BIN}" "${ROOT_DIR}/tools/resolve_vlm_runtime.py" --mode robot --allow-online-fallback)"
 eval "${RESOLVED_VLM_ENV}"
 
 export INTERRUPT_RTC_ENDPOINT_ENABLED="${INTERRUPT_RTC_ENDPOINT_ENABLED:-1}"
@@ -84,4 +86,4 @@ echo "rtc input device: ${INTERRUPT_RTC_INPUT_DEVICE}"
 echo "rtc output device: ${INTERRUPT_RTC_OUTPUT_DEVICE:-default}"
 echo "rtc proxy disabled for host: ${LIVEKIT_HOST:-unset}"
 
-exec python -m src.rtc_endpoint "$@"
+exec "${PYTHON_BIN}" -m src.rtc_endpoint "$@"

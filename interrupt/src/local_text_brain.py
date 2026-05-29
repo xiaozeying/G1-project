@@ -29,6 +29,33 @@ class LocalTextDecision:
     error: str = ""
 
 
+def _localized_text(language: str, mandarin: str, cantonese: str, english: str) -> str:
+    normalized = (language or "").strip()
+    if normalized == "zh-YUE":
+        return cantonese
+    if normalized == "en":
+        return english
+    return mandarin
+
+
+def _target_language_instruction(language: str) -> str:
+    normalized = (language or "").strip()
+    if normalized == "zh-YUE":
+        return (
+            "当前目标回复语言是粤语（zh-YUE）。"
+            " 如果返回文本回复，必须只用自然粤语表达，不要夹普通话书面腔，也不要输出英文。"
+        )
+    if normalized == "en":
+        return (
+            "Current target reply language is English (en)."
+            " If you return a text reply, respond only in natural English and do not mix in Chinese."
+        )
+    return (
+        "当前目标回复语言是普通话（zh-CN）。"
+        " 如果返回文本回复，必须只用自然普通话表达，不要夹粤语口语或英文。"
+    )
+
+
 def _system_prompt(language: str) -> str:
     return (
         "你是一个运行在机器人本地/局域网侧的文本决策脑。\n"
@@ -38,10 +65,15 @@ def _system_prompt(language: str) -> str:
         "2. 用户要求灯光时，优先调用 set_led_color。\n"
         "3. 用户要求看前方/看画面时，优先调用 ask_camera_vision。\n"
         "4. 用户要求导航或保存地点时，优先调用导航相关工具。\n"
-        "5. 做不到的能力要诚实拒答，不要假装已经执行。\n"
-        "6. 默认用简洁中文输出；仅当用户明确要求其他语言时再切换。\n"
-        "7. 你是机器人本地决策组件，不要自称 Qwen、阿里云或任何底层模型厂商。\n"
-        f"8. 当前目标回复语言偏好：{language}。\n"
+        "5. 开放闲聊、泛泛聊 AI、陪聊、寒暄、新闻、天气、知识问答，不要硬映射成动作或灯光工具。\n"
+        "6. 只有当用户明确要求机器人执行现实世界动作/灯光/看前方/导航/记地点时，才调用对应工具。\n"
+        "7. 做不到的能力要诚实拒答，不要假装已经执行。\n"
+        "8. 默认跟随当前目标回复语言输出，不要固定偏向中文。\n"
+        "9. 你是机器人本地决策组件，不要自称 Qwen、阿里云或任何底层模型厂商。\n"
+        "10. 如果要返回工具调用，参数内容优先保持和用户说法一致；如果要返回文本回复，必须严格遵守目标语言要求。\n"
+        "11. 如果用户要求“之后用粤语/英语/普通话回答”，这是上游 agent 负责记录的语言状态；你只需要遵守当前传入的目标语言。\n"
+        f"12. 当前目标回复语言偏好：{language}。\n"
+        f"13. {_target_language_instruction(language)}\n"
     )
 
 
@@ -252,6 +284,34 @@ def _parse_openai_tool_calls(message: dict[str, Any]) -> list[LocalTextToolCall]
 
 
 _PSEUDO_TOOL_CALL_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*$", re.S)
+_OPEN_CHAT_PATTERNS = (
+    "聊聊",
+    "聊天",
+    "闲聊",
+    "閒聊",
+    "随便聊",
+    "隨便聊",
+    "open chat",
+    "let's chat",
+    "lets chat",
+    "casually chat",
+    "chat about",
+    "talk about",
+    "artificial intelligence",
+    "人工智能",
+)
+_SAVED_LOCATIONS_PATTERNS = (
+    "哪些已保存地点",
+    "有哪些已保存地点",
+    "地点列表",
+    "保存地点",
+    "已保存地點",
+    "有咩已儲存地點",
+    "有哪些已儲存地點",
+    "saved locations",
+    "saved places",
+    "location list",
+)
 
 
 def _parse_pseudo_tool_from_text(content: str) -> tuple[LocalTextToolCall | None, str]:
@@ -295,6 +355,81 @@ def _parse_pseudo_tool_from_text(content: str) -> tuple[LocalTextToolCall | None
         return None, text or normalized
 
     return LocalTextToolCall(name=name, arguments=arguments), ""
+
+
+def _looks_like_open_chat_request(user_text: str) -> bool:
+    normalized = (user_text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(token in normalized for token in _OPEN_CHAT_PATTERNS)
+
+
+def _looks_like_saved_locations_query(user_text: str) -> bool:
+    normalized = (user_text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(token in normalized for token in _SAVED_LOCATIONS_PATTERNS)
+
+
+def _sanitize_tool_calls(
+    language: str,
+    user_text: str,
+    tool_calls: list[LocalTextToolCall],
+    text_reply: str,
+) -> tuple[list[LocalTextToolCall], str]:
+    normalized_reply = (text_reply or "").strip()
+
+    if _looks_like_open_chat_request(user_text):
+        fallback_reply = normalized_reply or _localized_text(
+            language,
+            "当然可以，我们可以聊聊人工智能。你想先聊应用场景、发展趋势，还是机器人能力？",
+            "當然可以，我哋可以傾下人工智能。你想先傾應用場景、發展趨勢，定係機械人能力？",
+            "Of course. We can chat about artificial intelligence. Would you like to start with use cases, trends, or robot capabilities?",
+        )
+        if any(
+            token in fallback_reply.lower()
+            for token in (
+                "online enhanced mode",
+                "在线增强模式",
+                "在線增強模式",
+                "local offline tool",
+                "本地离线工具",
+                "本地離線工具",
+            )
+        ):
+            fallback_reply = _localized_text(
+                language,
+                "当然可以，我们可以聊聊人工智能。你想先聊应用场景、发展趋势，还是机器人能力？",
+                "當然可以，我哋可以傾下人工智能。你想先傾應用場景、發展趨勢，定係機械人能力？",
+                "Of course. We can chat about artificial intelligence. Would you like to start with use cases, trends, or robot capabilities?",
+            )
+        return [], fallback_reply
+
+    if not tool_calls:
+        return tool_calls, text_reply
+
+    normalized_text = (user_text or "").strip()
+
+    if (
+        _looks_like_saved_locations_query(normalized_text)
+        and len(tool_calls) == 1
+        and tool_calls[0].name == "navigate_to_saved_location"
+    ):
+        location = str(tool_calls[0].arguments.get("location") or "").strip()
+        if location in {
+            "已保存地点列表",
+            "地点列表",
+            "保存地点",
+            "已保存地點列表",
+            "地點列表",
+            "已儲存地點",
+            "saved locations",
+            "saved places",
+            "location list",
+        }:
+            return [LocalTextToolCall(name="list_saved_locations", arguments={})], text_reply
+
+    return tool_calls, text_reply
 
 
 def _urlopen_without_proxy(
@@ -396,6 +531,7 @@ def _run_ollama_local_text_brain(
             content = ""
         else:
             content = normalized_text
+    tool_calls, content = _sanitize_tool_calls(language, user_text, tool_calls, content)
     return LocalTextDecision(
         ok=True,
         backend=agent_config.backend,
@@ -493,6 +629,7 @@ def _run_openai_compatible_local_text_brain(
             content = ""
         else:
             content = normalized_text
+    tool_calls, content = _sanitize_tool_calls(language, user_text, tool_calls, content)
     return LocalTextDecision(
         ok=True,
         backend=agent_config.backend,

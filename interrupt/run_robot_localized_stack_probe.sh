@@ -51,7 +51,7 @@ python tools/check_env.py
 python tools/agent_backend_probe.py
 python -m tools.local_text_brain_smoke "${PROMPT}" \
   --backend "${INTERRUPT_AGENT_LOCAL_TEXT_BACKEND_OVERRIDE:-local_text_ollama}" \
-  --base-url "${INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL:-http://192.168.100.48:11434}" \
-  --model "${INTERRUPT_AGENT_LOCAL_TEXT_MODEL:-qwen2.5:7b}"
+  --base-url "${INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL:-http://127.0.0.1:11434}" \
+  --model "${INTERRUPT_AGENT_LOCAL_TEXT_MODEL:-qwen2.5:1.5b}"
 python tools/vlm_backend_probe.py --require-model
 python tools/vlm_smoke_test.py "${QUESTION}" "$@"

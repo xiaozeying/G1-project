@@ -82,6 +82,18 @@ class AdapterDefaultsTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True):
             config = G1Om1AdapterConfig.from_env()
         self.assertTrue(config.navigation_script.endswith("g1_nav_command.py"))
+        self.assertIn(config.navigation_provider, {"http_bridge", "g1_3d_nav", "ros2_goal_pose"})
+
+    def test_g1_3d_nav_provider_resolves_bridge_runner(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"INTERRUPT_G1_NAV_PROVIDER": "g1_3d_nav"},
+            clear=True,
+        ):
+            config = G1Om1AdapterConfig.from_env()
+        self.assertEqual(config.navigation_provider, "g1_3d_nav")
+        self.assertTrue(config.navigation_script.endswith("g1_nav_command.py"))
+        self.assertTrue(config.navigation_bridge_runner.endswith("run_g1_3d_nav_bridge.sh"))
 
 
 class NavigationIntentTests(unittest.TestCase):

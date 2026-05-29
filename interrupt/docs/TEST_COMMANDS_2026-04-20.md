@@ -43,6 +43,36 @@ python3 -m py_compile src/om1_wakeword_gate.py
 python3 -m py_compile tools/wakeword_session_frontgate.py
 ```
 
+### 2.1.1 恢复后必须核验三语言自适应没有退化
+
+快照目录内有完整三语言自适应实现，但恢复完成后必须再看 active `agent.py`，防止机器人运行代码退化成固定普通话。
+
+本地快照参考实现检查：
+
+```bash
+cd /home/zz/HongTu
+grep -n 'def _extract_explicit_language_tag\|def _detect_reply_language\|def _detect_forced_reply_language\|def _preferred_reply_language' \
+  robot_snapshots/HongTu_from_G1_2026-04-16/interrupt/src/agent.py
+```
+
+当前主线 active 代码检查：
+
+```bash
+cd /home/zz/HongTu
+grep -n 'def _detect_reply_language\|def _detect_forced_reply_language\|def _preferred_reply_language' \
+  interrupt/src/agent.py
+```
+
+如果主线仍是这类退化实现，就不能算恢复完成：
+
+```python
+def _detect_reply_language(text: str) -> str:
+    return REPLY_LANGUAGE_MANDARIN
+
+def _detect_forced_reply_language(text: str) -> str | None:
+    return None
+```
+
 ### 2.2 环境检查
 
 ```bash
@@ -167,6 +197,56 @@ grep -nE 'wake_detected|wake_ack|session_cmd|session_exit|audio_level|\[zh\]|\[y
 grep -nE 'conversation_item_added: role=user|function_tools_executed|agent_state_changed|user_state_changed|server cancelled tool calls|restarting input stream|idle LED set' /home/unitree/HongTu/interrupt/logs/agent.log | tail -n 200
 ```
 
+### 5.4 恢复后机器人 active 配置核验
+
+先看 RTC 主播报默认值是否还在：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n '^INTERRUPT_ASSISTANT_AUDIO_MODE=\\|^INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE=\\|^INTERRUPT_RTC_SUBSCRIBE_AUDIO=\\|^INTERRUPT_RTC_OUTPUT_DEVICE=\\|^PULSE_SINK=' /home/unitree/HongTu/interrupt/.env.local"
+```
+
+再看机器人当前 `agent.py` 是否仍保留三语言自适应逻辑：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n 'def _detect_reply_language\\|def _detect_forced_reply_language\\|def _preferred_reply_language\\|reply language mode updated\\|reply language detected' /home/unitree/HongTu/interrupt/src/agent.py"
+```
+
+最后直接查最近语言检测日志：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -aE 'reply language mode updated|reply language detected|assistant reply language aligned|assistant reply language mismatch' /home/unitree/HongTu/interrupt/logs/room-agent.log | tail -n 80"
+```
+
+### 5.5 恢复后视觉问答入口与文件目录核验
+
+先看 active `agent.py` 是否仍挂着视觉问答入口：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "grep -n 'ask_camera_vision\\|camera vision query succeeded\\|VisionChatConfig\\|ask_camera_question' /home/unitree/HongTu/interrupt/src/agent.py"
+```
+
+再看视觉 / 本地决策相关文件是否都落在正确目录：
+
+```bash
+ssh -o StrictHostKeyChecking=no unitree@192.168.100.30 \
+  "cd /home/unitree/HongTu/interrupt && ls src/agent.py src/settings.py src/vision_chat.py src/local_text_brain.py src/navigation_intents.py src/safe_action_gateway.py src/safe_action_middleware.py src/cantonese_tts.py src/tts_mute_state.py tools/resolve_vlm_runtime.py tools/vlm_smoke_test.py"
+```
+
+如果误看到这些文件出现在根目录：
+
+```text
+/home/unitree/HongTu/interrupt/agent.py
+/home/unitree/HongTu/interrupt/vision_chat.py
+/home/unitree/HongTu/interrupt/settings.py
+/home/unitree/HongTu/interrupt/vlm_smoke_test.py
+```
+
+就说明同步目标写错了，service 即使能启动，也不能算恢复完成。
+
 ## 6. 联调测试清单
 
 ### 6.1 唤醒链路
@@ -227,6 +307,41 @@ grep -nE 'conversation_item_added: role=user|function_tools_executed|agent_state
 - 日志出现 `idle LED set: reason=user_away`
 - 灯回蓝
 - 之后可再次唤醒
+
+### 6.5 三语言自适应回归
+
+步骤：
+
+1. 唤醒并说普通话问题，例如 `你现在在哪`
+2. 再说英语，例如 `What can you do`
+3. 再说粤语，例如 `你可唔可以介绍下自己`
+4. 再说 `之后都用英语回答`
+5. 再说中文问题，确认仍用英语答
+6. 最后说 `恢复自动` 或 `跟着我说的话回答`
+7. 再说普通话问题，确认切回普通话
+
+通过标准：
+
+- 普通话输入默认普通话回答
+- 英语输入默认英语回答
+- 粤语输入默认粤语回答
+- 显式锁定语言后，后续回答服从锁定
+- 恢复自动后，重新跟随用户当前输入语言
+
+### 6.6 视觉问答回归
+
+步骤：
+
+1. 唤醒后说 `你前面有什么`
+2. 再说 `What do you see in front of you`
+3. 再说 `你可唔可以睇下前面有咩`
+
+通过标准：
+
+- 三句都能进入视觉问答链
+- 日志能看到 `ask_camera_vision` 或 `camera vision query succeeded`
+- 不会退化成普通闲聊回复
+- 不会因为恢复时误用瘦版 `agent.py` 导致视觉入口缺失
 
 ## 7. 当前已知限制
 

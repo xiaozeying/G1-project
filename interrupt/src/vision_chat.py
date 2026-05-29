@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -560,17 +561,34 @@ def _proxy_handler_for_vision_backend(config: VisionChatConfig) -> urllib.reques
 
 def _external_capture_python() -> str:
     configured = os.getenv("INTERRUPT_G1_OM1_PYTHON", "").strip()
-    if configured:
+    if configured and _python_can_run(configured):
         return configured
     candidates = (
+        Path(sys.executable),
         Path("/home/unitree/HongTu/OM1/.venv/bin/python"),
         Path("/home/zz/HongTu/OM1/.venv/bin/python"),
         Path("/home/zz/HongTu/robot_snapshots/HongTu_from_G1_2026-04-16/OM1/.venv/bin/python"),
     )
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.exists() and _python_can_run(str(candidate)):
             return str(candidate)
     return ""
+
+
+def _python_can_run(path: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [path, "-c", "import sys; print(sys.executable)"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except OSError:
+        return False
+    except Exception:
+        return False
+    return completed.returncode == 0
 
 
 def _capture_with_external_python(config: VisionChatConfig) -> VisionChatResult:

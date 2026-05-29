@@ -21,6 +21,33 @@ if str(ROOT_DIR) not in sys.path:
 from src.g1_om1_adapter import G1Om1Adapter
 
 
+def _hongtu_nav_runtime_probe() -> dict[str, Any]:
+    script = ROOT_DIR / "tools" / "hongtu_nav_runtime_probe.py"
+    if not script.exists():
+        return {"ok": False, "detail": "hongtu_nav_runtime_probe_missing"}
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=8.0,
+        )
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)}
+    payload: Any
+    try:
+        payload = json.loads((completed.stdout or "").strip() or "{}")
+    except json.JSONDecodeError:
+        payload = (completed.stdout or "").strip()
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "payload": payload,
+        "stderr": (completed.stderr or "").strip(),
+    }
+
+
 def _parse_host_port(base_url: str) -> tuple[str, int]:
     parsed = urlparse(base_url)
     host = parsed.hostname or "localhost"
@@ -29,8 +56,11 @@ def _parse_host_port(base_url: str) -> tuple[str, int]:
 
 
 def _socket_probe(host: str, port: int, timeout_s: float) -> dict[str, Any]:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout_s)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout_s)
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)}
     try:
         sock.connect((host, port))
         return {"ok": True}
@@ -123,6 +153,7 @@ def main() -> int:
         "cli_probe": _cli_probe(),
         "adapter": _paths_probe(),
         "processes": _ps_probe(),
+        "hongtu_nav_runtime": _hongtu_nav_runtime_probe(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

@@ -19,6 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 from src.livekit_room import ensure_room_ready, list_room_participants
 from src.g1_om1_adapter import G1Om1Adapter
 from src.settings import load_environment, load_settings
+from src.speech_loop_guard import note_local_playback
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -316,6 +317,7 @@ def _speak_room_ready(adapter: G1Om1Adapter) -> None:
         os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
         or "现在可以了"
     )
+    note_local_playback(reply, duration_s=4.0)
     speak_result = adapter.speak(reply)
     print(
         "[FrontGateRoom] room_ready_ack "
