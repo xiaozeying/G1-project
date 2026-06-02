@@ -237,6 +237,7 @@ def _load_wakeword_module(script_path: str):
 class Om1WakeWordGate(WakeWordGate):
     system: object
     capture_device: str
+    capture_hints: tuple[str, ...]
     chunk_duration: float
     software_gain: float
     level_interval: float
@@ -255,6 +256,26 @@ class Om1WakeWordGate(WakeWordGate):
         self._missing_asr_logged = False
         self._recent_texts: list[str] = []
         self._consecutive_capture_errors = 0
+
+    def _refresh_capture_device(self) -> bool:
+        selected_device, candidates, _hints = _pick_linux_capture_device(
+            "default",
+            self.capture_hints,
+        )
+        refreshed = (selected_device or "").strip()
+        current = (self.capture_device or "").strip()
+        if not refreshed or refreshed == current:
+            return False
+        self.capture_device = refreshed
+        print(
+            f"[FrontGate] wake capture device refreshed: old={current} new={refreshed}",
+            flush=True,
+        )
+        if candidates:
+            print("[FrontGate] refreshed capture_candidates:", flush=True)
+            for candidate in candidates[:8]:
+                print(f"  - {candidate}", flush=True)
+        return True
 
     def wait_for_wake(self) -> WakeWordEvent | None:
         if self._closed:
@@ -339,6 +360,13 @@ class Om1WakeWordGate(WakeWordGate):
                     f"attempt={self._consecutive_capture_errors} error={exc}",
                     flush=True,
                 )
+                error_text = str(exc).lower()
+                if (
+                    "cannot get card index" in error_text
+                    or "no such device" in error_text
+                    or "audio open error" in error_text
+                ):
+                    self._refresh_capture_device()
                 if self._consecutive_capture_errors >= max_consecutive_errors:
                     raise RuntimeError(
                         f"wake capture failed {self._consecutive_capture_errors} times: {exc}"
@@ -546,6 +574,7 @@ def factory(
     return Om1WakeWordGate(
         system=system,
         capture_device=selected_device,
+        capture_hints=tuple(hints),
         chunk_duration=float(
             chunk_duration
             if chunk_duration is not None

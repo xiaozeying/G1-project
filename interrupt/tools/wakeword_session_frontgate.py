@@ -19,6 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.settings import load_environment, load_settings
 from src.g1_om1_adapter import G1Om1Adapter
+from src.speech_loop_guard import note_local_playback
 from src.wakeword_runtime import WakeWordEvent, create_wake_word_gate
 
 
@@ -185,11 +186,13 @@ def _local_wake_ack(
         return None
 
     if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK", True):
-        if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO", True):
+        if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO", False):
             reply = _wake_intro_text(event)
         else:
             reply = os.getenv("INTERRUPT_FRONTGATE_WAKE_ACK_TEXT", DEFAULT_WAKE_ACK).strip() or DEFAULT_WAKE_ACK
         speak_result = adapter.speak(reply)
+        if speak_result.ok:
+            note_local_playback(reply, language=_wake_language(event))
         print(
             f"[FrontGate] wake_ack wakeword={event.wakeword} reply={reply} ok={speak_result.ok} stdout={speak_result.stdout!r} stderr={speak_result.stderr!r}",
             flush=True,

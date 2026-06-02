@@ -6,7 +6,43 @@
 
 补充更新：2026-05-29
 
+补充更新：2026-06-02
+
 这份文档记录当前已经在机器人 `192.168.100.30` 上跑通的整条语音链恢复口径，目标是下次刷机或迁移时，不再靠现场回忆逐段补。
+
+## 2026-06-02 当前恢复补充结论
+
+截至 `2026-06-02`，当前现场已经先收口到“可正式现场测试”的状态，但要明确：
+
+- 本轮优先保的是 `offline_singlebox` 本地演示链
+- 不是继续扩在线能力面
+- 当前最主要剩余问题已从“链路断”转为“本地回复太慢”
+
+本轮新增恢复结论：
+
+- 机器人侧主口径固定为：
+  - `INTERRUPT_AGENT_RUNTIME_MODE=offline_singlebox`
+  - `INTERRUPT_AGENT_BACKEND=local_text_ollama`
+  - `INTERRUPT_AGENT_LOCAL_TEXT_DECISION_MODE=prefer_tools`
+- 中英文回复继续走：
+  - `OM1/scripts/external_usb_tts.sh`
+- 粤语继续保留单独 TTS：
+  - `interrupt/src/cantonese_tts.py`
+- 粤语专用 TTS 已修复事件循环崩溃问题，不再直接报：
+  - `asyncio.run() cannot be called from a running event loop`
+
+这意味着下次恢复后，如果要先复现 `2026-06-02` 这一步稳定态，应优先恢复：
+
+- 前门唤醒
+- room-agent / rtc-endpoint 接管
+- 本地脑 `local_text_ollama`
+- 中英 USB TTS
+- 粤语专用 TTS
+- 自播回灌抑制逻辑
+
+当前这一步的详细说明见：
+
+- `interrupt/docs/OFFLINE_SINGLEBOX_FIELD_STABILIZATION_2026-06-02.md`
 
 ## 2026-05-29 最新恢复结论
 

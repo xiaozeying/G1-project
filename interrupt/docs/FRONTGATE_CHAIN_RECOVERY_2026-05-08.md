@@ -4,6 +4,8 @@
 
 补充说明：
 
+- `2026-06-02` 当前“先收口到可现场测试”的状态见：
+  - `interrupt/docs/OFFLINE_SINGLEBOX_FIELD_STABILIZATION_2026-06-02.md`
 - `2026-05-11` 之后的“一步到位恢复”口径见：
   - `interrupt/docs/VOICE_CHAIN_ONE_SHOT_RESTORE_2026-05-11.md`
 - 本文档更偏 `2026-05-07` 到 `2026-05-08` 的现场恢复过程

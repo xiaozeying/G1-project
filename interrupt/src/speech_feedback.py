@@ -75,6 +75,41 @@ class SpeechFeedbackRouter:
             skip_log_prefix="跳过本地工具前置播报",
         )
 
+    def speak_forced_local_reply(
+        self,
+        text: str,
+        *,
+        language: str,
+        normalize_tts_text: Callable[[str], str],
+    ) -> bool:
+        normalized = normalize_tts_text(text)
+        if not normalized:
+            return False
+        if language == "zh-YUE" and self._cantonese_tts.enabled:
+            try:
+                if self._cantonese_tts.synthesize_and_play(normalized):
+                    note_local_playback(normalized, language=language)
+                    LOGGER.info("强制本地回复播报成功: backend=edge_tts_yue text=%r", normalized)
+                    return True
+            except Exception as exc:
+                LOGGER.warning("强制本地粤语回复播报失败，回退默认链路: error=%s text=%r", exc, normalized)
+        if not self._adapter.available:
+            LOGGER.warning("强制本地回复播报跳过: adapter unavailable text=%r", normalized)
+            return False
+        result = self._adapter.speak(normalized)
+        if result.ok:
+            note_local_playback(normalized, language=language)
+            LOGGER.info("强制本地回复播报成功: backend=om1 text=%r", normalized)
+            return True
+        LOGGER.warning(
+            "强制本地回复播报失败: rc=%s stdout=%r stderr=%r text=%r",
+            result.returncode,
+            result.stdout,
+            result.stderr,
+            normalized,
+        )
+        return False
+
     def _speak_with_mode(
         self,
         text: str,

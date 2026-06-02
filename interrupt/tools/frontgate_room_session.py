@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import shlex
@@ -16,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.livekit_room import ensure_room_ready, list_room_participants
+from src.livekit_room import connect_room, ensure_room_ready, list_room_participants
 from src.g1_om1_adapter import G1Om1Adapter
 from src.settings import load_environment, load_settings
 from src.speech_loop_guard import note_local_playback
@@ -174,12 +175,42 @@ def _terminate_matching_processes(name: str, pattern: str) -> None:
 def _ensure_process_running(name: str, pattern: str, command: str) -> subprocess.Popen[bytes] | None:
     if _is_process_running(pattern):
         _terminate_matching_processes(name, pattern)
-    argv = shlex.split(command)
-    print(f"[FrontGateRoom] starting {name}: {' '.join(argv)}", flush=True)
+    env = os.environ.copy()
+    usb_source = env.get(
+        "INTERRUPT_FRONTGATE_FORCE_PULSE_SOURCE",
+        "alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+    ).strip()
+    usb_sink = env.get(
+        "INTERRUPT_FRONTGATE_FORCE_PULSE_SINK",
+        "alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+    ).strip()
+    usb_input_device = env.get(
+        "INTERRUPT_FRONTGATE_FORCE_RTC_INPUT_DEVICE",
+        env.get("INTERRUPT_RTC_INPUT_DEVICE", "plughw:CARD=audio,DEV=0"),
+    ).strip()
+    if name == "rtc-endpoint":
+        env["PULSE_SOURCE"] = usb_source
+        env["PULSE_SINK"] = usb_sink
+        env["INTERRUPT_RTC_INPUT_DEVICE"] = usb_input_device
+        env["INTERRUPT_RTC_OUTPUT_DEVICE"] = env.get("INTERRUPT_RTC_OUTPUT_DEVICE", "pulse").strip() or "pulse"
+        rtc_script = str(ROOT_DIR / "run_robot_rtc_endpoint.sh")
+        argv = [rtc_script]
+        print(
+            "[FrontGateRoom] starting rtc-endpoint: "
+            f"env INTERRUPT_RTC_INPUT_DEVICE={env['INTERRUPT_RTC_INPUT_DEVICE']} "
+            f"INTERRUPT_RTC_OUTPUT_DEVICE={env['INTERRUPT_RTC_OUTPUT_DEVICE']} "
+            f"PULSE_SOURCE={env['PULSE_SOURCE']} "
+            f"PULSE_SINK={env['PULSE_SINK']} "
+            f"{rtc_script}",
+            flush=True,
+        )
+    else:
+        argv = shlex.split(command)
+        print(f"[FrontGateRoom] starting {name}: {' '.join(argv)}", flush=True)
     return subprocess.Popen(
         argv,
         cwd=str(ROOT_DIR),
-        env=os.environ.copy(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -238,6 +269,9 @@ async def _wait_for_managed_process_readiness(
     room_agent_alive_fallback_after_s = float(
         os.getenv("INTERRUPT_FRONTGATE_ROOM_AGENT_ALIVE_READY_AFTER_S", "8").strip() or "8"
     )
+    rtc_alive_fallback_after_s = float(
+        os.getenv("INTERRUPT_FRONTGATE_RTC_ALIVE_READY_AFTER_S", "4").strip() or "4"
+    )
 
     # Let newly started processes write their run headers before we begin polling.
     await asyncio.sleep(min(0.3, max(0.0, poll_s)))
@@ -286,6 +320,17 @@ async def _wait_for_managed_process_readiness(
                         rtc_offset,
                     )
                 )
+                if not rtc_ready and rtc_endpoint_proc is not None:
+                    elapsed = time.monotonic() - wait_started_at
+                    # Do not treat a merely live rtc-endpoint process as ready
+                    # immediately. On the robot, stale logs or a process that
+                    # failed to acquire the microphone can otherwise be
+                    # mistaken for a healthy handoff.
+                    rtc_ready = (
+                        rtc_endpoint_proc.poll() is None
+                        and _log_size(rtc_log) > rtc_offset
+                        and elapsed >= max(0.0, rtc_alive_fallback_after_s)
+                    )
         if room_agent_ready and rtc_ready:
             print(
                 f"[FrontGateRoom] managed readiness room-agent={room_agent_ready} rtc-endpoint={rtc_ready}",
@@ -317,13 +362,28 @@ def _speak_room_ready(adapter: G1Om1Adapter) -> None:
         os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
         or "现在可以了"
     )
-    note_local_playback(reply, duration_s=4.0)
+    note_local_playback(reply, duration_s=1.2)
     speak_result = adapter.speak(reply)
     print(
         "[FrontGateRoom] room_ready_ack "
         f"reply={reply} ok={speak_result.ok} stdout={speak_result.stdout!r} stderr={speak_result.stderr!r}",
         flush=True,
     )
+
+
+async def _queue_room_ready_via_rtc(settings, reply: str) -> bool:
+    room = await connect_room(settings)
+    try:
+        participant = room.local_participant
+        await participant.publish_data(
+            reply.encode("utf-8"),
+            reliable=True,
+            topic="interrupt/frontgate/room_ready_ack",
+        )
+        return True
+    finally:
+        with contextlib.suppress(Exception):
+            await room.disconnect()
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -372,8 +432,9 @@ async def _run(args: argparse.Namespace) -> int:
                 flush=True,
             )
             await asyncio.sleep(pre_dispatch_delay_s)
+        managed_processes_ready = not started_processes
         if started_processes:
-            ready = await _wait_for_managed_process_readiness(
+            managed_processes_ready = await _wait_for_managed_process_readiness(
                 room_agent_started=room_agent_started,
                 rtc_endpoint_started=rtc_endpoint_started,
                 room_agent_proc=room_agent_proc,
@@ -383,7 +444,7 @@ async def _run(args: argparse.Namespace) -> int:
                 timeout_s=max(2.0, args.startup_timeout),
                 poll_s=max(0.2, args.poll_interval),
             )
-            if not ready:
+            if not managed_processes_ready:
                 return 1
 
         await ensure_room_ready(
@@ -405,6 +466,12 @@ async def _run(args: argparse.Namespace) -> int:
         poll_interval_s = max(0.2, args.poll_interval)
         idle_grace_s = max(0.0, args.idle_grace)
         max_duration_s = max(0.0, args.max_duration)
+        room_agent_log = ROOT_DIR / "logs" / "room-agent.log"
+        room_agent_listening_marker = "agent_state_changed: initializing -> listening"
+        room_ready_reply = (
+            os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
+            or "现在可以了"
+        )
 
         while True:
             if signal_path.exists():
@@ -435,13 +502,48 @@ async def _run(args: argparse.Namespace) -> int:
                     flush=True,
                 )
                 return 0
-            session_ready = bool(agents and robots)
+            room_agent_listening = _log_contains_since(
+                room_agent_log,
+                room_agent_listening_marker,
+                room_agent_offset,
+            )
+            # Ready means "the user can begin talking now".
+            # Require the robot rtc endpoint participant to be present in the
+            # room; otherwise the agent may be alive but there is still no
+            # microphone path for user speech to reach it.
+            session_ready = bool(
+                managed_processes_ready and robots and room_agent_listening
+            )
             if session_ready:
                 if not saw_session_ready:
-                    _speak_room_ready(adapter)
+                    ack_mode = os.getenv(
+                        "INTERRUPT_FRONTGATE_ROOM_READY_ACK_MODE",
+                        "room_agent_rtc",
+                    ).strip().lower() or "room_agent_rtc"
+                    if ack_mode == "room_agent_rtc":
+                        queued = False
+                        try:
+                            queued = await _queue_room_ready_via_rtc(settings, room_ready_reply)
+                        except Exception as exc:
+                            print(
+                                "[FrontGateRoom] room_ready_ack relay failed "
+                                f"reply={room_ready_reply} mode=room_agent_rtc error={exc}",
+                                flush=True,
+                            )
+                        if queued:
+                            print(
+                                "[FrontGateRoom] room_ready_ack queued "
+                                f"reply={room_ready_reply} mode=room_agent_rtc",
+                                flush=True,
+                            )
+                        else:
+                            _speak_room_ready(adapter)
+                    else:
+                        _speak_room_ready(adapter)
                     print(
                         "[FrontGateRoom] room session active "
-                        f"room={settings.rtc_endpoint.room_name} agents={agents} robots={robots}",
+                        f"room={settings.rtc_endpoint.room_name} agents={agents} robots={robots} "
+                        f"room_agent_listening={room_agent_listening}",
                         flush=True,
                     )
                 saw_session_ready = True

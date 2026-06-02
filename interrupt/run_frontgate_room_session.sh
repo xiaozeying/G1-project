@@ -32,7 +32,10 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
 fi
 
 interrupt_maybe_force_singlebox_local_text_loopback
-interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log" || true
+if ! interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log"; then
+  echo "local text backend required but not ready; room session will not start" >&2
+  exit 1
+fi
 
 RESOLVED_VLM_ENV="$("${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/tools/resolve_vlm_runtime.py" --mode robot --allow-online-fallback)"
 eval "${RESOLVED_VLM_ENV}"

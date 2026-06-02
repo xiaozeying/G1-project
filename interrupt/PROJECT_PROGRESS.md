@@ -1,6 +1,32 @@
 # interrupt 项目进展记录
 
-最后更新时间：2026-05-29
+最后更新时间：2026-06-02
+
+## 2026-06-02 offline_singlebox 现场收口
+
+本轮目标不是继续扩能力，而是先把机器人收口到“可以正式现场测试”的状态。
+
+当前已经新增并确认的收口结论：
+
+- `offline_singlebox + local_text_ollama + prefer_tools` 已作为本轮机器人现场主口径固定
+- 前门 `interrupt-frontgate.service` 已恢复为当前唯一推荐入口
+- 中英文房间回复已重新对齐到 `external_usb_tts.sh -> USB sink`
+- 英文推荐声线固定为 `en-US-JennyNeural`
+- 中文推荐声线固定为 `zh-CN-XiaoxiaoNeural`
+- 粤语继续保留单独 `edge-tts` 分支，推荐声线 `zh-HK-HiuGaaiNeural`
+- 本地短碎片过滤、回灌抑制、自播保护已补强，明显减少“自己跟自己说话”
+- 粤语专用 TTS 在房间事件循环里直接崩溃的问题已修复，不再触发：
+  - `asyncio.run() cannot be called from a running event loop`
+
+当前最准确的状态是：
+
+- 主链已经能现场演示
+- 但回复时延仍偏大
+- 下一步最高优先级应转向“机器人本地回复 GPU 加速”
+
+本轮单独收口说明、恢复口径与下一步建议见：
+
+- `interrupt/docs/OFFLINE_SINGLEBOX_FIELD_STABILIZATION_2026-06-02.md`
 
 ## 2026-05-29 单机三语链路与前门接管收口
 

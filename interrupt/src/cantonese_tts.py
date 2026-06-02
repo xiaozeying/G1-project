@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 
 import edge_tts
@@ -57,7 +58,7 @@ class EdgeCantoneseTts:
         normalized = " ".join((text or "").split()).strip()
         if not normalized or not self.is_available():
             return False
-        audio_path = asyncio.run(self._synthesize_to_file(normalized))
+        audio_path = self._synthesize_to_file_sync(normalized)
         try:
             duration_s = _probe_duration_seconds(audio_path)
             if self._config.mute_remote_audio:
@@ -96,8 +97,44 @@ class EdgeCantoneseTts:
             raise CantoneseTtsError(str(exc)) from exc
         return temp_path
 
+    def _synthesize_to_file_sync(self, text: str) -> str:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._synthesize_to_file(text))
+
+        result: dict[str, str] = {}
+        error: list[BaseException] = []
+
+        def _runner() -> None:
+            try:
+                result["audio_path"] = asyncio.run(self._synthesize_to_file(text))
+            except BaseException as exc:  # pragma: no cover
+                error.append(exc)
+
+        worker = threading.Thread(
+            target=_runner,
+            name="interrupt-cantonese-tts",
+            daemon=True,
+        )
+        worker.start()
+        worker.join()
+
+        if error:
+            exc = error[0]
+            if isinstance(exc, CantoneseTtsError):
+                raise exc
+            raise CantoneseTtsError(str(exc)) from exc
+        audio_path = result.get("audio_path", "").strip()
+        if not audio_path:
+            raise CantoneseTtsError("cantonese tts synthesis returned no audio path")
+        return audio_path
+
     def _play_file(self, audio_path: str) -> None:
         command = self._resolve_playback_command()
+        if command == "paplay":
+            self._play_file_via_paplay(audio_path)
+            return
         argv = [command, audio_path]
         if command == "ffplay":
             argv = [command, "-nodisp", "-autoexit", "-loglevel", "error", audio_path]
@@ -118,6 +155,72 @@ class EdgeCantoneseTts:
         except subprocess.CalledProcessError as exc:
             raise CantoneseTtsError(exc.stderr.strip() or str(exc)) from exc
 
+    def _play_file_via_paplay(self, audio_path: str) -> None:
+        decoder = self._resolve_paplay_decoder()
+        if not decoder:
+            raise CantoneseTtsError("paplay playback requested but no decoder available")
+        fd, wav_path = tempfile.mkstemp(prefix="interrupt-yue-tts-", suffix=".wav")
+        os.close(fd)
+        try:
+            self._decode_to_wav(decoder, audio_path, wav_path)
+            argv = [
+                "paplay",
+                "--volume=65536",
+                "--stream-name=interrupt-cantonese-tts",
+            ]
+            sink = self._resolve_pulse_sink()
+            if sink:
+                argv.insert(1, f"--device={sink}")
+            argv.append(wav_path)
+            result = subprocess.run(
+                argv,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if result.returncode == 0:
+                return
+            raise CantoneseTtsError(result.stderr.strip() or f"paplay failed rc={result.returncode}")
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(wav_path)
+
+    def _resolve_paplay_decoder(self) -> str:
+        for candidate in ("ffmpeg", "mpg123"):
+            if shutil.which(candidate):
+                return candidate
+        return ""
+
+    def _decode_to_wav(self, decoder: str, audio_path: str, wav_path: str) -> None:
+        if decoder == "ffmpeg":
+            argv = [decoder, "-nostdin", "-loglevel", "error", "-y", "-i", audio_path, wav_path]
+        elif decoder == "mpg123":
+            argv = [decoder, "-q", "-w", wav_path, audio_path]
+        else:
+            raise CantoneseTtsError(f"unsupported paplay decoder: {decoder}")
+        result = subprocess.run(
+            argv,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise CantoneseTtsError(result.stderr.strip() or f"{decoder} decode failed rc={result.returncode}")
+
+    def _resolve_pulse_sink(self) -> str:
+        requested = (
+            os.getenv("OM1_EXTERNAL_SINK", "").strip()
+            or os.getenv("PULSE_SINK", "").strip()
+        )
+        if requested:
+            return requested
+        default_sink = _read_pactl_default_sink()
+        if default_sink:
+            return default_sink
+        return ""
+
     def _resolve_playback_command(self) -> str:
         requested = (self._config.playback_command or "").strip()
         if requested:
@@ -130,10 +233,10 @@ class EdgeCantoneseTts:
             return "mpv"
         if shutil.which("gst-play-1.0"):
             return "gst-play-1.0"
-        if shutil.which("play"):
-            return "play"
         if shutil.which("paplay"):
             return "paplay"
+        if shutil.which("play"):
+            return "play"
         return "mpg123"
 
 
@@ -182,3 +285,21 @@ def _probe_duration_seconds(audio_path: str) -> float:
         return float((result.stdout or "").strip() or "3.0")
     except ValueError:
         return 3.0
+
+
+def _read_pactl_default_sink() -> str:
+    pactl = shutil.which("pactl")
+    if not pactl:
+        return ""
+    result = subprocess.run(
+        [pactl, "info"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    for line in (result.stdout or "").splitlines():
+        if line.lower().startswith("default sink:"):
+            return line.split(":", 1)[1].strip()
+    return ""

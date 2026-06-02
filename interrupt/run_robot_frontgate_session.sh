@@ -71,6 +71,20 @@ first_pulse_source_matching() {
   return 1
 }
 
+is_usb_pulse_source() {
+  local value="${1:-}"
+  [[ -n "${value}" && "${value}" == *"usb"* && "${value}" == *"mvsilicon"* ]]
+}
+
+is_usb_pulse_sink() {
+  local value="${1:-}"
+  [[ -n "${value}" && "${value}" == *"usb"* && "${value}" == *"mvsilicon"* ]]
+}
+
+have_usb_alsa_capture() {
+  arecord -l 2>/dev/null | grep -F "card 0: audio" >/dev/null 2>&1
+}
+
 first_pulse_sink_matching() {
   local pattern match
   for pattern in "$@"; do
@@ -155,7 +169,7 @@ retry_audio_startup_preflight_once() {
   if command -v pactl >/dev/null 2>&1; then
     local refreshed_source=""
     local refreshed_sink=""
-    refreshed_source="$(first_pulse_source_matching "platform-sound" "alsa_input.platform-sound" "usb" "alsa_input" || true)"
+    refreshed_source="$(first_pulse_source_matching "usb" "mvsilicon" "alsa_input.usb" "platform-sound" "alsa_input.platform-sound" "alsa_input" || true)"
     refreshed_sink="$(first_pulse_sink_matching "usb" "mvsilicon" "platform-sound" "alsa_output" || true)"
     if [[ -n "${refreshed_source}" ]]; then
       export PULSE_SOURCE="${refreshed_source}"
@@ -189,6 +203,10 @@ fi
 
 interrupt_maybe_force_singlebox_local_text_loopback
 
+export INTERRUPT_ASSISTANT_AUDIO_MODE="${INTERRUPT_ASSISTANT_AUDIO_MODE:-local}"
+export INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE="${INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE:-local}"
+export INTERRUPT_ENABLE_LOCAL_TEXT_REPLY_FALLBACK="${INTERRUPT_ENABLE_LOCAL_TEXT_REPLY_FALLBACK:-1}"
+
 export LD_LIBRARY_PATH="$(prepend_path_entry "/usr/local/lib" "${LD_LIBRARY_PATH:-}")"
 export INTERRUPT_G1_OM1_PYTHON="${INTERRUPT_G1_OM1_PYTHON:-$(pick_om1_python)}"
 export INTERRUPT_G1_DIRECT_COMMAND_SCRIPT="${INTERRUPT_G1_DIRECT_COMMAND_SCRIPT:-/home/unitree/HongTu/OM1/scripts/g1_direct_command_fallback.py}"
@@ -209,8 +227,12 @@ export INTERRUPT_FRONTGATE_REALTIME_END_SENSITIVITY="${INTERRUPT_FRONTGATE_REALT
 export INTERRUPT_FRONTGATE_MIN_ENDPOINTING_DELAY_MS="${INTERRUPT_FRONTGATE_MIN_ENDPOINTING_DELAY_MS:-150}"
 export INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS="${INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS:-600}"
 export INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS="${INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS:-200}"
-export PULSE_SOURCE="${PULSE_SOURCE:-alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo}"
-export PULSE_SINK="${PULSE_SINK:-alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo}"
+if [[ -z "${PULSE_SOURCE:-}" || "${PULSE_SOURCE:-}" == *"platform-sound"* || "${PULSE_SOURCE:-}" == *".monitor"* ]]; then
+  export PULSE_SOURCE="alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo"
+fi
+if [[ -z "${PULSE_SINK:-}" || "${PULSE_SINK:-}" == *"platform-sound"* || "${PULSE_SINK:-}" == *".monitor"* ]]; then
+  export PULSE_SINK="alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo"
+fi
 export PULSE_SINK_VOLUME_PERCENT="${PULSE_SINK_VOLUME_PERCENT:-100%}"
 export OM1_CONSOLE_INPUT_DEVICE="${OM1_CONSOLE_INPUT_DEVICE:-mvsilicon B1 usb audio}"
 export OM1_CONSOLE_OUTPUT_DEVICE="${OM1_CONSOLE_OUTPUT_DEVICE:-pulse}"
@@ -242,7 +264,7 @@ fi
 if [[ "${INTERRUPT_RTC_OUTPUT_DEVICE}" == "pulse" || "${INTERRUPT_RTC_OUTPUT_DEVICE}" == "default" || "${INTERRUPT_RTC_OUTPUT_DEVICE}" == "0" ]]; then
   export INTERRUPT_RTC_OUTPUT_DEVICE="${OM1_CONSOLE_OUTPUT_DEVICE}"
 fi
-export INTERRUPT_FRONTGATE_PYTHON="${INTERRUPT_FRONTGATE_PYTHON:-/home/unitree/miniforge3/envs/wakeword-clean/bin/python}"
+export INTERRUPT_FRONTGATE_PYTHON="${INTERRUPT_FRONTGATE_PYTHON:-${INTERRUPT_G1_OM1_PYTHON}}"
 export OM1_CAPTURE_HINTS="${OM1_CAPTURE_HINTS:-mvsilicon B1 usb audio,USB Audio,MV-SILICON}"
 export OM1_CAPTURE_DEVICE="${OM1_CAPTURE_DEVICE:-default}"
 export OM1_WAKEWORD_CHUNK_DURATION="${OM1_WAKEWORD_CHUNK_DURATION:-1.6}"
@@ -263,7 +285,9 @@ export INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_TIMEOUT="${INTERRUPT_FRONTGATE_
 export INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S="${INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S:-12.0}"
 
 if command -v pactl >/dev/null 2>&1; then
-  if [[ -n "${PULSE_SOURCE}" ]]; then
+  if have_usb_alsa_capture; then
+    echo "robot usb alsa capture ready: ${INTERRUPT_RTC_INPUT_DEVICE}"
+  elif [[ -n "${PULSE_SOURCE}" ]]; then
     if wait_for_pulse_endpoint "source" "${PULSE_SOURCE}" "${INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S}"; then
       echo "robot pulse source ready: ${PULSE_SOURCE}"
     else
@@ -278,26 +302,36 @@ if command -v pactl >/dev/null 2>&1; then
     fi
   fi
   if ! pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SOURCE}" >/dev/null 2>&1; then
-    FALLBACK_PULSE_SOURCE="$(first_pulse_source_matching "platform-sound" "alsa_input.platform-sound" "alsa_input")"
+    FALLBACK_PULSE_SOURCE="$(first_pulse_source_matching "usb" "mvsilicon" "alsa_input.usb" || true)"
     if [[ -n "${FALLBACK_PULSE_SOURCE}" ]]; then
       export PULSE_SOURCE="${FALLBACK_PULSE_SOURCE}"
     fi
   fi
   if ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SINK}" >/dev/null 2>&1; then
-    FALLBACK_PULSE_SINK="$(first_pulse_sink_matching "platform-sound" "alsa_output.platform-sound" "alsa_output")"
+    FALLBACK_PULSE_SINK="$(first_pulse_sink_matching "usb" "mvsilicon" "alsa_output.usb" || true)"
     if [[ -n "${FALLBACK_PULSE_SINK}" ]]; then
       export PULSE_SINK="${FALLBACK_PULSE_SINK}"
     fi
   fi
   CURRENT_PULSE_SOURCE="$(pactl info 2>/dev/null | sed -n 's/^Default Source: //p' | head -n1)"
   CURRENT_PULSE_SINK="$(pactl info 2>/dev/null | sed -n 's/^Default Sink: //p' | head -n1)"
-  if pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SOURCE}" >/dev/null 2>&1; then
+  if ! is_usb_pulse_sink "${PULSE_SINK}"; then
+    USB_SINK_CANDIDATE="$(first_pulse_sink_matching "usb-MV-SILICON" "mvsilicon" "alsa_output.usb" || true)"
+    if [[ -n "${USB_SINK_CANDIDATE}" ]]; then
+      export PULSE_SINK="${USB_SINK_CANDIDATE}"
+    fi
+  fi
+  if have_usb_alsa_capture; then
+    echo "robot usb alsa capture present: ${INTERRUPT_RTC_INPUT_DEVICE}"
+    echo "robot pulse source kept as: ${CURRENT_PULSE_SOURCE:-unset}"
+  elif pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SOURCE}" >/dev/null 2>&1; then
     if [[ "${CURRENT_PULSE_SOURCE}" != "${PULSE_SOURCE}" ]]; then
       pactl set-default-source "${PULSE_SOURCE}" || true
     fi
     echo "robot pulse default source: ${CURRENT_PULSE_SOURCE:-unset} -> ${PULSE_SOURCE}"
   else
     echo "robot pulse preferred source missing: ${PULSE_SOURCE}"
+    echo "robot frontgate will rely on direct ALSA capture instead of pulse source for USB microphone"
   fi
   if pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SINK}" >/dev/null 2>&1; then
     if [[ "${CURRENT_PULSE_SINK}" != "${PULSE_SINK}" ]]; then
@@ -316,8 +350,28 @@ if command -v pactl >/dev/null 2>&1; then
   fi
 fi
 
-export INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND="${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND:-env INTERRUPT_USER_AWAY_TIMEOUT_MS=${INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS} INTERRUPT_MIN_INTERRUPTION_DURATION_MS=${INTERRUPT_FRONTGATE_MIN_INTERRUPTION_DURATION_MS} INTERRUPT_FALSE_INTERRUPTION_TIMEOUT_MS=${INTERRUPT_FRONTGATE_FALSE_INTERRUPTION_TIMEOUT_MS} INTERRUPT_REALTIME_START_SENSITIVITY=${INTERRUPT_FRONTGATE_REALTIME_START_SENSITIVITY} INTERRUPT_REALTIME_END_SENSITIVITY=${INTERRUPT_FRONTGATE_REALTIME_END_SENSITIVITY} INTERRUPT_MIN_ENDPOINTING_DELAY_MS=${INTERRUPT_FRONTGATE_MIN_ENDPOINTING_DELAY_MS} INTERRUPT_MAX_ENDPOINTING_DELAY_MS=${INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS} INTERRUPT_REALTIME_PREFIX_PADDING_MS=${INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS} ${ROOT_DIR}/run_room_agent.sh}"
-export INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND="${INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND:-env INTERRUPT_RTC_AUTO_DISPATCH_AGENT=0 INTERRUPT_RTC_AGENT_ABSENCE_CHECK_INTERVAL_S=0 INTERRUPT_RTC_INPUT_DEVICE=${INTERRUPT_RTC_INPUT_DEVICE} INTERRUPT_RTC_OUTPUT_DEVICE=${INTERRUPT_RTC_OUTPUT_DEVICE} PULSE_SOURCE=${PULSE_SOURCE} PULSE_SINK=${PULSE_SINK} ${ROOT_DIR}/run_robot_rtc_endpoint.sh}"
+printf -v INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND_DEFAULT \
+  "env INTERRUPT_USER_AWAY_TIMEOUT_MS=%q INTERRUPT_MIN_INTERRUPTION_DURATION_MS=%q INTERRUPT_FALSE_INTERRUPTION_TIMEOUT_MS=%q INTERRUPT_REALTIME_START_SENSITIVITY=%q INTERRUPT_REALTIME_END_SENSITIVITY=%q INTERRUPT_MIN_ENDPOINTING_DELAY_MS=%q INTERRUPT_MAX_ENDPOINTING_DELAY_MS=%q INTERRUPT_REALTIME_PREFIX_PADDING_MS=%q %q" \
+  "${INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS}" \
+  "${INTERRUPT_FRONTGATE_MIN_INTERRUPTION_DURATION_MS}" \
+  "${INTERRUPT_FRONTGATE_FALSE_INTERRUPTION_TIMEOUT_MS}" \
+  "${INTERRUPT_FRONTGATE_REALTIME_START_SENSITIVITY}" \
+  "${INTERRUPT_FRONTGATE_REALTIME_END_SENSITIVITY}" \
+  "${INTERRUPT_FRONTGATE_MIN_ENDPOINTING_DELAY_MS}" \
+  "${INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS}" \
+  "${INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS}" \
+  "${ROOT_DIR}/run_room_agent.sh"
+export INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND="${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND:-${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND_DEFAULT}}"
+
+printf -v INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND_DEFAULT \
+  "env INTERRUPT_RTC_INPUT_DEVICE=%q INTERRUPT_RTC_OUTPUT_DEVICE=%q PULSE_SOURCE=%q PULSE_SINK=%q %q" \
+  "${INTERRUPT_RTC_INPUT_DEVICE}" \
+  "${INTERRUPT_RTC_OUTPUT_DEVICE}" \
+  "${PULSE_SOURCE}" \
+  "${PULSE_SINK}" \
+  "${ROOT_DIR}/run_robot_rtc_endpoint.sh"
+export INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND="${INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND:-${INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND_DEFAULT}}"
+export INTERRUPT_FRONTGATE_ENSURE_RTC_ENDPOINT="${INTERRUPT_FRONTGATE_ENSURE_RTC_ENDPOINT:-1}"
 
 echo "robot frontgate factory: ${INTERRUPT_WAKE_WORD_FACTORY}"
 echo "robot wakeword script: ${WAKEWORD_SCRIPT}"
@@ -350,6 +404,7 @@ echo "robot rtc input device: ${INTERRUPT_RTC_INPUT_DEVICE}"
 echo "robot rtc output device: ${INTERRUPT_RTC_OUTPUT_DEVICE}"
 echo "robot room agent command: ${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND:-${ROOT_DIR}/run_room_agent.sh}"
 echo "robot rtc endpoint command: ${INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND:-${ROOT_DIR}/run_robot_rtc_endpoint.sh}"
+echo "robot ensure rtc endpoint on wake: ${INTERRUPT_FRONTGATE_ENSURE_RTC_ENDPOINT}"
 echo "robot session device wait substring: ${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING}"
 echo "robot local text base_url: ${INTERRUPT_AGENT_LOCAL_TEXT_BASE_URL:-unset}"
 echo "robot local text model: ${INTERRUPT_AGENT_LOCAL_TEXT_MODEL:-qwen2.5:1.5b}"
@@ -358,6 +413,9 @@ if ! run_audio_startup_preflight; then
   retry_audio_startup_preflight_once || true
 fi
 
-interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log" || true
+if ! interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log"; then
+  echo "local text backend required but not ready; frontgate session will not start" >&2
+  exit 1
+fi
 
 exec "${ROOT_DIR}/run_frontgate_session.sh" "$@"

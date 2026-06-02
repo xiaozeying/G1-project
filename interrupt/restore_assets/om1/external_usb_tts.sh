@@ -34,7 +34,29 @@ resolve_interrupt_root() {
 }
 
 INTERRUPT_ROOT="$(resolve_interrupt_root)"
-EDGE_TTS_PYTHON="${OM1_EDGE_TTS_PYTHON:-${INTERRUPT_ROOT}/.venv/bin/python}"
+
+resolve_edge_tts_python() {
+  local requested="${OM1_EDGE_TTS_PYTHON:-}"
+  if [[ -n "${requested}" && -x "${requested}" ]]; then
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+  local candidate
+  for candidate in \
+    "${INTERRUPT_ROOT}/.venv/bin/python" \
+    "/home/unitree/HongTu/interrupt/.venv/bin/python" \
+    "/home/unitree/HongTu/OM1/.venv-g1-runtime/bin/python" \
+    "/home/unitree/HongTu/OM1/.venv-g1/bin/python"
+  do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  printf '%s\n' "${INTERRUPT_ROOT}/.venv/bin/python"
+}
+
+EDGE_TTS_PYTHON="$(resolve_edge_tts_python)"
 EDGE_TTS_ZH_VOICE="${OM1_EDGE_TTS_ZH_VOICE:-zh-CN-XiaoxiaoNeural}"
 EDGE_TTS_EN_VOICE="${OM1_EDGE_TTS_EN_VOICE:-en-US-JennyNeural}"
 EDGE_TTS_RATE="${OM1_EDGE_TTS_RATE:-+0%}"

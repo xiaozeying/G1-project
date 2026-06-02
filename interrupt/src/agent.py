@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import urllib.request
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
@@ -93,6 +94,10 @@ REALTIME_PREFIX_PADDING_MS = int(
     os.getenv("INTERRUPT_REALTIME_PREFIX_PADDING_MS", "500").strip() or "500"
 )
 USER_AWAY_TIMEOUT_S = max(1.0, SETTINGS.agent.user_away_timeout_ms / 1000.0)
+ENABLE_FRONTGATE_IDLE_SESSION_EXIT = os.getenv(
+    "INTERRUPT_ENABLE_FRONTGATE_IDLE_SESSION_EXIT",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 FRONTGATE_SESSION_EXIT_SIGNAL_FILE = (
     os.getenv("INTERRUPT_FRONTGATE_SESSION_EXIT_SIGNAL_FILE", "").strip()
 )
@@ -170,11 +175,27 @@ TOOL_INTENT_GUARD_WINDOW_S = float(
 PARTIAL_FASTPATH_MIN_CHARS = int(
     os.getenv("INTERRUPT_PARTIAL_FASTPATH_MIN_CHARS", "2").strip() or "2"
 )
+POST_SPEECH_GIBBERISH_GUARD_S = float(
+    os.getenv("INTERRUPT_POST_SPEECH_GIBBERISH_GUARD_S", "4.0").strip() or "4.0"
+)
+POST_SPEECH_GIBBERISH_MAX_ALPHA = int(
+    os.getenv("INTERRUPT_POST_SPEECH_GIBBERISH_MAX_ALPHA", "10").strip() or "10"
+)
+RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S = float(
+    os.getenv("INTERRUPT_RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S", "30.0").strip() or "30.0"
+)
+RECENT_ASSISTANT_REPLY_SIMILARITY = float(
+    os.getenv("INTERRUPT_RECENT_ASSISTANT_REPLY_SIMILARITY", "0.88").strip() or "0.88"
+)
 _LAST_USER_TEXT_LOCK = threading.Lock()
 _LAST_USER_TEXT = ""
 _LAST_USER_TEXT_AT = 0.0
 _LAST_EFFECTIVE_USER_INPUT_AT_LOCK = threading.Lock()
 _LAST_EFFECTIVE_USER_INPUT_AT = time.monotonic()
+_LAST_AGENT_SPEECH_ENDED_AT_LOCK = threading.Lock()
+_LAST_AGENT_SPEECH_ENDED_AT = 0.0
+_RECENT_ASSISTANT_REPLIES_LOCK = threading.Lock()
+_RECENT_ASSISTANT_REPLIES: list[tuple[str, float]] = []
 _LANGUAGE_STATE_LOCK = threading.Lock()
 _LAST_DETECTED_USER_LANGUAGE = "zh-CN"
 _FORCED_REPLY_LANGUAGE = ""
@@ -320,10 +341,19 @@ def _normalize_body_action(action: str) -> str:
 
 
 _CJK_CHAR_RE = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
-_CJK_LATIN_DIGIT_RE = re.compile(rf"(?<=[{_CJK_CHAR_RE}A-Za-z0-9])\s+(?=[{_CJK_CHAR_RE}A-Za-z0-9])")
+_CJK_LATIN_DIGIT_RE = re.compile(
+    rf"(?:(?<=[{_CJK_CHAR_RE}])\s+(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])\s+(?=[{_CJK_CHAR_RE}])|(?<=[{_CJK_CHAR_RE}])\s+(?=[{_CJK_CHAR_RE}]))"
+)
 _PUNCT_SPACING_RE = re.compile(r"\s+([，。！？；：,.!?;:])")
 _TTS_BREAK_PUNCT_RE = re.compile(r"[，,、；;：:]")
 _TTS_DROP_PUNCT_RE = re.compile(r"[“”\"'`()\[\]{}<>《》【】]")
+_ASCII_WORD_SPACE_RE = re.compile(r"(?<=[A-Za-z])\s+(?=[A-Za-z])")
+_META_REPLY_LINE_RE = re.compile(
+    r"(根据(规则|您的要求)[^。！？!?\n]*[。！？!?]?|"
+    r"下面是一个简短的自然语言回复[:：]?\s*|"
+    r"请优先返回工具调用[^。！？!?\n]*[。！？!?]?|"
+    r"由于用户[^。！？!?\n]*[。！？!?]?)"
+)
 
 
 def _normalize_assistant_text(text: str) -> str:
@@ -339,12 +369,18 @@ def _normalize_tts_text(text: str) -> str:
     normalized = _normalize_assistant_text(text)
     if not normalized:
         return ""
-    normalized = _TTS_BREAK_PUNCT_RE.sub(" ", normalized)
+    normalized = _META_REPLY_LINE_RE.sub("", normalized)
+    normalized = re.sub(r"\s*\n+\s*", "。", normalized)
+    normalized = _TTS_BREAK_PUNCT_RE.sub("，", normalized)
     normalized = _TTS_DROP_PUNCT_RE.sub("", normalized)
     normalized = normalized.replace("...", "。").replace("…", "。")
     normalized = re.sub(r"[。]{2,}", "。", normalized)
     normalized = re.sub(r"[！？]{2,}", lambda m: m.group(0)[0], normalized)
+    normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z])", "", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])", "", normalized)
+    normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", normalized)
     normalized = " ".join(normalized.split()).strip()
+    normalized = _ASCII_WORD_SPACE_RE.sub(" ", normalized)
     return normalized
 
 
@@ -366,6 +402,184 @@ def _is_noise_only_transcript(text: str) -> bool:
         "silence",
         "empty",
     }
+
+
+def _mark_agent_speech_ended() -> None:
+    with _LAST_AGENT_SPEECH_ENDED_AT_LOCK:
+        global _LAST_AGENT_SPEECH_ENDED_AT
+        _LAST_AGENT_SPEECH_ENDED_AT = time.monotonic()
+
+
+def _seconds_since_agent_speech_ended() -> float:
+    with _LAST_AGENT_SPEECH_ENDED_AT_LOCK:
+        if _LAST_AGENT_SPEECH_ENDED_AT <= 0:
+            return float("inf")
+        return max(0.0, time.monotonic() - _LAST_AGENT_SPEECH_ENDED_AT)
+
+
+def _looks_like_short_post_speech_gibberish(text: str) -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return True
+    if re.search(rf"[{_CJK_CHAR_RE}]", normalized):
+        return False
+    folded = re.sub(r"[^A-Za-z]+", "", normalized).lower()
+    if not folded:
+        return True
+    if len(folded) > POST_SPEECH_GIBBERISH_MAX_ALPHA:
+        return False
+    valid_short_words = {
+        "yes",
+        "no",
+        "ok",
+        "okay",
+        "stop",
+        "cancel",
+        "hello",
+        "hi",
+        "help",
+    }
+    if folded in valid_short_words:
+        return False
+    return True
+
+
+def _should_ignore_post_speech_gibberish(text: str) -> bool:
+    if POST_SPEECH_GIBBERISH_GUARD_S <= 0:
+        return False
+    if _seconds_since_agent_speech_ended() > POST_SPEECH_GIBBERISH_GUARD_S:
+        return False
+    return _looks_like_short_post_speech_gibberish(text)
+
+
+def _should_ignore_low_information_transcript(text: str) -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return True
+    if re.search(rf"[{_CJK_CHAR_RE}]", normalized):
+        return False
+    english_words = re.findall(r"[A-Za-z]+", normalized)
+    if english_words:
+        lowered_words = [word.lower() for word in english_words]
+        if len(lowered_words) == 1 and len(lowered_words[0]) <= 2:
+            return True
+        if len(lowered_words) <= 2 and all(len(word) <= 2 for word in lowered_words):
+            return True
+    if re.search(r"[A-Za-z]{2,}", normalized):
+        return False
+    if re.search(r"\d{2,}", normalized):
+        return False
+    folded_ascii = re.sub(r"[^A-Za-z]+", "", normalized)
+    if len(folded_ascii) <= 1:
+        return True
+    # Filter out single-symbol / single-codepoint junk such as stray Thai,
+    # punctuation, or one-character Latin fragments that often come from
+    # echo/AEC residue after playback.
+    compact = re.sub(r"\s+", "", normalized)
+    return len(compact) <= 1
+
+
+def _should_ignore_user_backchannel(text: str) -> bool:
+    normalized_text = _normalize_assistant_text(text)
+    normalized = normalized_text.lower()
+    if not normalized:
+        return True
+    if _looks_like_user_question(normalized_text):
+        return False
+    compact = re.sub(r"\s+", "", normalized)
+    folded_ascii = re.sub(r"[^a-z]+", "", compact)
+    if re.search(rf"[{_CJK_CHAR_RE}]", compact):
+        if "?" in compact or "？" in compact:
+            return False
+        short_cjk_backchannels = {
+            "嗯",
+            "恩",
+            "哦",
+            "喔",
+            "啊",
+            "哎",
+            "好",
+            "好的",
+            "係",
+            "系",
+        }
+        if compact in short_cjk_backchannels:
+            return True
+        return len(compact) <= 1
+    if compact in {
+        "yes",
+        "yeah",
+        "yep",
+        "so",
+        "uh",
+        "um",
+        "hmm",
+        "mm",
+        "mhm",
+        "ah",
+        "oh",
+        "ok",
+        "okay",
+        "sure",
+        "alright",
+        "hello",
+        "hi",
+    }:
+        return True
+    if len(folded_ascii) <= 1:
+        return True
+    if re.fullmatch(r"[.。!！?？,，~～]+", compact):
+        return True
+    return False
+
+
+def _fold_text_for_echo_match(text: str) -> str:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\b[A-Za-z]\b", " ", normalized)
+    normalized = normalized.replace("Centre", "Center").replace("centre", "center")
+    normalized = normalized.replace("Centres", "Centers").replace("centres", "centers")
+    return re.sub(rf"[^\w{_CJK_CHAR_RE}]+", "", normalized).lower()
+
+
+def _remember_recent_assistant_reply(text: str) -> None:
+    folded = _fold_text_for_echo_match(text)
+    if not folded or RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S <= 0:
+        return
+    now = time.monotonic()
+    with _RECENT_ASSISTANT_REPLIES_LOCK:
+        global _RECENT_ASSISTANT_REPLIES
+        _RECENT_ASSISTANT_REPLIES = [
+            (candidate, ts)
+            for candidate, ts in _RECENT_ASSISTANT_REPLIES
+            if now - ts <= RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S
+        ]
+        _RECENT_ASSISTANT_REPLIES.append((folded, now))
+
+
+def _looks_like_recent_assistant_reply_echo(text: str) -> bool:
+    folded = _fold_text_for_echo_match(text)
+    if not folded or RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S <= 0:
+        return False
+    now = time.monotonic()
+    with _RECENT_ASSISTANT_REPLIES_LOCK:
+        global _RECENT_ASSISTANT_REPLIES
+        _RECENT_ASSISTANT_REPLIES = [
+            (candidate, ts)
+            for candidate, ts in _RECENT_ASSISTANT_REPLIES
+            if now - ts <= RECENT_ASSISTANT_REPLY_SUPPRESS_WINDOW_S
+        ]
+        candidates = list(_RECENT_ASSISTANT_REPLIES)
+    for candidate, _ts in candidates:
+        if folded == candidate:
+            return True
+        if len(folded) >= 8 and (folded in candidate or candidate in folded):
+            return True
+        if len(folded) >= 10 and len(candidate) >= 10:
+            if SequenceMatcher(None, folded, candidate).ratio() >= RECENT_ASSISTANT_REPLY_SIMILARITY:
+                return True
+    return False
 
 
 def _contains_cantonese_markers(text: str) -> bool:
@@ -582,12 +796,297 @@ def _offline_singlebox_limit_reply() -> str:
     )
 
 
+def _looks_like_self_echo_transcript(text: str) -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return False
+    markers = (
+        "我是笨笨同学",
+        "我可以用粤语",
+        "我可以用粵語",
+        "今天很高兴在这里为您服务",
+        "今日好高興喺呢度為您服務",
+        "如果您想了解数据中心",
+        "如果您想了解數據中心",
+        "随时告诉我哦",
+        "隨時同我講哦",
+        "现在可以了",
+        "當前是單機離線模式",
+        "当前是单机离线模式",
+        "请打开在线增强模式后再试",
+        "請打開在線增強模式之後再試",
+        "好的正在执行动作",
+        "actioncommandfailed",
+        "execute_robot_command_text",
+        "perform_body_action",
+        "好的正在执行",
+        "好啊依家執行",
+        "当前处于离线模式",
+        "已为您切换到在线模式",
+        "刚才我没有听到明确的视觉问",
+        "啱啱我未聽到明確要我睇畫面",
+        "所以先不看相机画面",
+        "所以而家先唔開相機",
+        "i didn't hear a clear visual question",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _looks_like_tool_payload_text(text: str) -> bool:
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    compact = normalized.lower()
+    if compact.startswith("{") and ("\"name\"" in compact or "\"arguments\"" in compact):
+        return True
+    return any(
+        token in compact
+        for token in (
+            "execute_robot_command_text",
+            "perform_body_action",
+            "\"arguments\"",
+            "\"name\"",
+            "actioncommandfailed",
+        )
+    )
+
+
+def _extract_spoken_reply_text(text: str) -> str:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return ""
+    if _looks_like_tool_payload_text(normalized):
+        return ""
+    return normalized
+
+
+def _looks_like_user_question(text: str) -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    compact = re.sub(r"\s+", "", normalized)
+    if "?" in normalized or "？" in normalized:
+        return True
+    markers = (
+        "你会做什么",
+        "你可以做什么",
+        "你可以做些什么",
+        "你能做什么",
+        "你可以做到啲咩",
+        "你可以做到咩",
+        "你可以做啲咩",
+        "你可以做咩",
+        "你係邊個",
+        "你系边个",
+        "依家幾點",
+        "依家几点",
+        "而家幾點",
+        "而家几点",
+        "而家係咩模式",
+        "你會講咩語言",
+        "你會做咩",
+        "可以介绍一下",
+        "介绍一下",
+        "而家几点",
+        "现在几点",
+        "几点了",
+        "what can you do",
+        "who are you",
+        "what time is it",
+        "can you introduce yourself",
+        "tell me",
+    )
+    return any(
+        marker in normalized
+        or marker in lowered
+        or marker.replace(" ", "") in compact.lower()
+        for marker in markers
+    )
+
+
+def _looks_like_recent_assistant_reprompt(text: str) -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return False
+    compact = re.sub(r"\s+", "", normalized)
+    if len(compact) < 12:
+        return False
+    markers = (
+        "请告诉我您需要什么帮助",
+        "请告诉我您需要什么帮助或询问的问题",
+        "请提供具体需求或问题",
+        "请告诉我您需要什么帮助或者想要了解的信息",
+        "如果您有任何问题或需要帮助",
+        "如果没有其他具体需求",
+        "whatwouldyouliketoknow",
+        "whatcanihelpyouwith",
+        "helloimherewhatwouldyouliketoknow",
+    )
+    compact_lower = compact.lower()
+    return any(marker in normalized or marker in compact_lower for marker in markers)
+
+
 def _offline_singlebox_unavailable_reply() -> str:
     return _localized_text(
         "当前是单机离线模式，但本地能力暂时不可用。请稍后重试，或切回在线增强模式。",
         "而家係單機離線模式，但本地能力暫時不可用。請稍後再試，或者切回在線增強模式。",
         "The robot is in single-box offline mode, but the local capability path is temporarily unavailable. Please try again later or switch back to online mode.",
     )
+
+
+def _offline_persona_reply_for_category(category: str, *, language: str | None = None) -> str:
+    if category == "intro":
+        return _localized_text(
+            "你好，我是笨笨同学，中国移动环球智算中心的智能导览机器人。",
+            "你好，我係笨笨同學，係中國移動環球智算中心嘅智能導覽機器人。",
+            "Hello, I'm BenBen, the smart tour guide robot of China Mobile's Global Intelligent Computing Centre.",
+            language=language,
+        )
+    if category == "capabilities":
+        return _localized_text(
+            "我可以回答问题，介绍园区和数据中心信息，也可以帮您控制灯光、执行动作、查询天气新闻和回答画面内容。",
+            "我可以答問題，介紹園區同數據中心資訊，亦可以幫您控制燈光、做動作、查天氣新聞同回答畫面內容。",
+            "I can answer questions, introduce the campus and data center, control lights, perform actions, check weather and news, and answer vision questions.",
+            language=language,
+        )
+    if category == "languages":
+        return _localized_text(
+            "我可以用普通话、粤语和英文交流。",
+            "我可以用普通話、粵語同英文交流。",
+            "I can speak Mandarin, Cantonese, and English.",
+            language=language,
+        )
+    if category == "mode":
+        return _localized_text(
+            "我现在运行在单机离线模式，可以进行本地对话和本地能力调用。",
+            "我而家運行緊單機離線模式，可以進行本地對話同本地能力調用。",
+            "I am currently running in single-box offline mode with local dialogue and local skills.",
+            language=language,
+        )
+    return ""
+
+
+def _offline_persona_query_category(text: str) -> str | None:
+    normalized = _normalize_assistant_text(text).lower()
+    if not normalized:
+        return None
+    squashed = normalized.replace(" ", "")
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "你是谁",
+            "你是誰",
+            "介绍一下你自己",
+            "介紹一下你自己",
+            "介绍你自己",
+            "介紹你自己",
+            "自我介绍",
+            "自我介紹",
+            "what's your name",
+            "what is your name",
+            "whatsyourname",
+            "who are you",
+            "introduce yourself",
+            "can you introduce yourself",
+        )
+    ):
+        return "intro"
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "你会什么",
+            "你會什麼",
+            "你能做什么",
+            "你能做些什么",
+            "你可以做什么",
+            "你可以做些什么",
+            "what can you do",
+            "your capabilities",
+        )
+    ):
+        return "capabilities"
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "你会说什么语言",
+            "你支持什么语言",
+            "你会说英文吗",
+            "你會說英文嗎",
+            "what languages do you speak",
+            "which languages can you speak",
+            "do you speak english",
+            "can you speak english",
+        )
+    ):
+        return "languages"
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "你现在是什么模式",
+            "你现在是在线还是离线",
+            "are you offline",
+            "are you online",
+            "what mode are you in",
+        )
+    ):
+        return "mode"
+    return None
+
+
+def _offline_singlebox_builtin_reply(text: str) -> str:
+    normalized = _normalize_assistant_text(text).lower()
+    if not normalized:
+        return ""
+    squashed = normalized.replace(" ", "")
+    if _looks_like_recent_assistant_reprompt(normalized):
+        return ""
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "你好",
+            "您好",
+            "hello",
+            "hi",
+            "hey",
+            "你在吗",
+            "are you there",
+        )
+    ):
+        return _localized_text(
+            "你好，我在。请问您想了解什么？",
+            "你好，我喺度。請問您想了解咩？",
+            "Hello, I'm here. What would you like to know?",
+        )
+    category = _offline_persona_query_category(normalized)
+    if category:
+        return _offline_persona_reply_for_category(category)
+    if any(
+        (token in normalized) or (token.replace(" ", "") in squashed)
+        for token in (
+            "谢谢",
+            "多谢",
+            "thank you",
+            "thanks",
+        )
+    ):
+        return _localized_text(
+            "不客气。",
+            "唔使客氣。",
+            "You're welcome.",
+        )
+    if any(
+        (token in normalized) or (token in squashed)
+        for token in (
+            "请告诉我您需要什么帮助",
+            "请提问您的问题",
+            "如果您有任何问题或需要帮助",
+            "whatwouldyouliketoknow",
+            "whatcanihelpyouwith",
+        )
+    ):
+        return ""
+    return ""
 
 
 def _tool_call_allowed_in_offline_singlebox(tool_call: LocalTextToolCall) -> bool:
@@ -1960,6 +2459,12 @@ async def _execute_local_text_tool_call(tool_call: LocalTextToolCall) -> str:
     arguments = tool_call.arguments
     if name == "perform_body_action":
         action = _normalize_body_action(str(arguments.get("action", "") or ""))
+        if not action:
+            return _localized_text(
+                "我没有识别到明确动作，所以这次不执行任何动作。",
+                "我未識別到明確動作，所以今次唔會執行任何動作。",
+                "I did not detect a clear action, so I will not execute anything this time.",
+            )
         result = await _execute_action_local(action, source="local_text_brain")
         if _looks_like_local_tool_failure(result):
             return result
@@ -2022,6 +2527,19 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
     normalized = _normalize_assistant_text(text)
     if not normalized:
         return False
+    if _should_ignore_user_backchannel(normalized):
+        LOGGER.info("local_text_decision skipped for brief backchannel text=%r", normalized)
+        return True
+    if offline_singlebox:
+        builtin_reply = _offline_singlebox_builtin_reply(normalized)
+        if builtin_reply:
+            _remember_latest_user_text(normalized)
+            try:
+                await session.interrupt(force=True)
+            except Exception:
+                LOGGER.debug("offline_singlebox interrupt skipped before builtin fast reply", exc_info=True)
+            _speak_local_text_reply_fallback(builtin_reply)
+            return True
     decision = await asyncio.to_thread(
         run_local_text_brain,
         dataclasses.replace(
@@ -2048,14 +2566,6 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
         return False
     if not decision.ok:
         if offline_singlebox:
-            if _looks_like_intro_query(normalized):
-                _remember_latest_user_text(normalized)
-                try:
-                    await session.interrupt(force=True)
-                except Exception:
-                    LOGGER.debug("offline_singlebox interrupt skipped before builtin intro", exc_info=True)
-                _speak_local_text_reply_fallback(_builtin_intro_reply())
-                return True
             if _looks_like_vision_query(normalized):
                 _remember_latest_user_text(normalized)
                 try:
@@ -2065,16 +2575,17 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
                 reply = await InterruptAssistant().ask_camera_vision(normalized)
                 _speak_local_text_reply_fallback(reply)
                 return True
+            LOGGER.info(
+                "offline_singlebox local_text unavailable, responding with local unavailable reply: user_text=%r error=%s",
+                normalized,
+                decision.error,
+            )
             try:
                 await session.interrupt(force=True)
             except Exception:
-                LOGGER.debug("offline_singlebox interrupt skipped after local_text failure", exc_info=True)
-            LOGGER.warning(
-                "offline_singlebox local_text_decision failed without builtin fallback: error=%s user_text=%r",
-                decision.error,
-                normalized,
-            )
-            return False
+                LOGGER.debug("offline_singlebox interrupt skipped before unavailable reply", exc_info=True)
+            _speak_local_text_reply_fallback(_offline_singlebox_unavailable_reply())
+            return True
         return False
     if not decision.tool_calls and LOCAL_TEXT_DECISION_MODE != "prefer_all" and not offline_singlebox:
         return False
@@ -2091,14 +2602,15 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
                 blocked_tool_names,
                 normalized,
             )
-        normalized_text_reply = _normalize_assistant_text(decision.text_reply)
-        if not allowed_tool_calls and normalized_text_reply:
-            decision = dataclasses.replace(
-                decision,
-                tool_calls=[],
-                text_reply=normalized_text_reply,
-            )
-        elif not allowed_tool_calls:
+        direct_reply = _extract_spoken_reply_text(decision.text_reply)
+        if direct_reply:
+            try:
+                await session.interrupt(force=True)
+            except Exception:
+                LOGGER.debug("offline_singlebox interrupt skipped before direct local text reply", exc_info=True)
+            _speak_local_text_reply_fallback(direct_reply)
+            return True
+        if not allowed_tool_calls:
             try:
                 await session.interrupt(force=True)
             except Exception:
@@ -2133,6 +2645,13 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
             "我而家已經切到本地對話鏈，不過呢句暫時未生成穩定回覆。",
             "I switched to the local dialogue path, but I do not have a stable reply for that yet.",
         )
+    if _looks_like_tool_payload_text(final_reply):
+        LOGGER.warning("local_text_decision final reply looked like tool payload; replacing text=%r", final_reply)
+        final_reply = _localized_text(
+            "我刚才没有稳定组织好回答，请再问我一次。",
+            "我頭先未穩定組織好回覆，請再問我一次。",
+            "I did not form that reply cleanly just now. Please ask me again.",
+        )
     if final_reply:
         try:
             session.say(
@@ -2141,12 +2660,19 @@ async def _try_handle_local_text_decision(session: AgentSession, text: str) -> b
                 add_to_chat_ctx=True,
             )
         except RuntimeError as exc:
-            LOGGER.warning(
-                "local_text_decision session.say unavailable, fallback to local speak: error=%s text=%r",
-                exc,
-                final_reply,
-            )
-            _speak_local_text_reply_fallback(final_reply)
+            if _should_skip_local_tts_fallback():
+                LOGGER.warning(
+                    "local_text_decision session.say unavailable, suppress local speak in transport_only mode: error=%s text=%r",
+                    exc,
+                    final_reply,
+                )
+            else:
+                LOGGER.warning(
+                    "local_text_decision session.say unavailable, fallback to local speak: error=%s text=%r",
+                    exc,
+                    final_reply,
+                )
+                _speak_local_text_reply_fallback(final_reply)
     return True
 
 
@@ -2213,7 +2739,17 @@ def _resume_active_listen_led_delayed(reason: str) -> None:
 
 class InterruptAssistant(Agent):
     def __init__(self) -> None:
-        super().__init__(instructions=_effective_instructions())
+        agent_kwargs = {
+            "instructions": _effective_instructions(),
+        }
+        if _is_local_text_room_backend():
+            agent_kwargs.update(
+                llm=None,
+                stt=None,
+                tts=None,
+                turn_detection="manual",
+            )
+        super().__init__(**agent_kwargs)
 
     @function_tool(
         name="set_led_color",
@@ -2733,12 +3269,18 @@ def _require_supported_room_agent_backend() -> None:
             raise RuntimeError("GEMINI_API_KEY 未设置，无法启动 LiveKit Gemini Agent。")
         return
     if backend in {"local_text_ollama", "local_text_openai_compatible"}:
-        raise RuntimeError(
-            f"INTERRUPT_AGENT_BACKEND={backend} 已识别，但正式 LiveKit room agent 仍未接入本地文本脑。"
-            " 当前请继续使用本机评测入口 `interrupt/run_local_text_offline_eval.sh`，"
-            " 或将 backend 改回 gemini_realtime。"
+        LOGGER.info(
+            "room agent backend enabled: backend=%s runtime_mode=%s local_text_mode=%s",
+            backend,
+            SETTINGS.agent.runtime_mode,
+            SETTINGS.agent.local_text_decision_mode,
         )
+        return
     raise RuntimeError(f"unsupported agent backend: {backend}")
+
+
+def _is_local_text_room_backend() -> bool:
+    return SETTINGS.agent.backend in {"local_text_ollama", "local_text_openai_compatible"}
 
 
 def _build_session() -> AgentSession:
@@ -2746,6 +3288,22 @@ def _build_session() -> AgentSession:
     mcp_servers = build_mcp_servers(SETTINGS)
     if not mcp_servers:
         LOGGER.warning("未配置可用 MCP/HTTP 实时工具；天气走本地接口，新闻走 RSS 直连，其他外部实时数据能力有限。")
+    if _is_local_text_room_backend():
+        return AgentSession(
+            llm=None,
+            stt=None,
+            tts=None,
+            turn_detection="manual",
+            mcp_servers=mcp_servers,
+            allow_interruptions=SETTINGS.agent.allow_interruptions,
+            min_endpointing_delay=SETTINGS.agent.min_endpointing_delay_ms / 1000,
+            max_endpointing_delay=SETTINGS.agent.max_endpointing_delay_ms / 1000,
+            min_interruption_duration=SETTINGS.agent.min_interruption_duration_ms / 1000,
+            false_interruption_timeout=SETTINGS.agent.false_interruption_timeout_ms / 1000,
+            discard_audio_if_uninterruptible=True,
+            aec_warmup_duration=SETTINGS.agent.aec_warmup_duration_ms / 1000,
+            user_away_timeout=USER_AWAY_TIMEOUT_S,
+        )
     effective_instructions = _effective_instructions()
     model_kwargs = {
         "api_key": SETTINGS.gemini_api_key,
@@ -2808,22 +3366,23 @@ def _speak_local_text_reply_fallback(text: str) -> bool:
     normalized = _normalize_tts_text(text)
     if not normalized:
         return False
-    if not G1_ADAPTER.available:
-        LOGGER.warning("local text reply fallback skipped: G1 adapter unavailable")
-        return False
-    result = G1_ADAPTER.speak(normalized)
-    if result.ok:
-        note_local_playback(normalized, language=_preferred_reply_language())
-        LOGGER.info("local text reply fallback spoke via OM1: text=%r", normalized)
-        return True
-    LOGGER.warning(
-        "local text reply fallback failed: rc=%s stdout=%r stderr=%r text=%r",
-        result.returncode,
-        result.stdout,
-        result.stderr,
+    language = _preferred_reply_language()
+    if SPEECH_FEEDBACK.speak_forced_local_reply(
         normalized,
-    )
+        language=language,
+        normalize_tts_text=_normalize_tts_text,
+    ):
+        _remember_recent_assistant_reply(normalized)
+        _mark_agent_speech_ended()
+        LOGGER.info("local text reply fallback spoke via local TTS: language=%s text=%r", language, normalized)
+        return True
     return False
+
+
+def _should_skip_local_tts_fallback() -> bool:
+    assistant_mode = str(getattr(SETTINGS.feedback, "assistant_audio_mode", "") or "").strip().lower()
+    tool_ack_mode = str(getattr(SETTINGS.feedback, "local_tool_ack_audio_mode", "") or "").strip().lower()
+    return assistant_mode == "transport_only" and tool_ack_mode == "transport_only"
 
 
 def _wire_debug_events(session: AgentSession) -> None:
@@ -2835,6 +3394,9 @@ def _wire_debug_events(session: AgentSession) -> None:
     _reset_effective_user_input_timer()
 
     async def _monitor_user_input_idle() -> None:
+        if not ENABLE_FRONTGATE_IDLE_SESSION_EXIT:
+            LOGGER.info("frontgate idle session exit disabled; keeping multi-turn session active")
+            return
         while True:
             await asyncio.sleep(1.0)
             if idle_shutdown_started["value"]:
@@ -2990,6 +3552,8 @@ def _wire_debug_events(session: AgentSession) -> None:
             getattr(ev, "old_state", ""),
             new_state,
         )
+        if getattr(ev, "old_state", "") == "speaking" and new_state == "listening":
+            _mark_agent_speech_ended()
 
     @session.on("overlapping_speech")
     def _on_overlapping_speech(ev: object) -> None:
@@ -3010,6 +3574,33 @@ def _wire_debug_events(session: AgentSession) -> None:
             transcript,
         )
         if noise_only:
+            if is_final:
+                interrupted_while_speaking["value"] = False
+            return
+        if transcript and _should_ignore_low_information_transcript(transcript):
+            LOGGER.info(
+                "user_input_transcribed ignored low-information transcript: final=%s text=%r",
+                is_final,
+                transcript,
+            )
+            if is_final:
+                interrupted_while_speaking["value"] = False
+            return
+        if transcript and _should_ignore_post_speech_gibberish(transcript):
+            LOGGER.info(
+                "user_input_transcribed ignored post-speech short gibberish: final=%s text=%r",
+                is_final,
+                transcript,
+            )
+            if is_final:
+                interrupted_while_speaking["value"] = False
+            return
+        if transcript and _looks_like_recent_assistant_reply_echo(transcript):
+            LOGGER.info(
+                "user_input_transcribed ignored recent assistant reply echo: final=%s text=%r",
+                is_final,
+                transcript,
+            )
             if is_final:
                 interrupted_while_speaking["value"] = False
             return
@@ -3061,6 +3652,18 @@ def _wire_debug_events(session: AgentSession) -> None:
         if role == "user" and not interrupted and text:
             if _is_noise_only_transcript(text):
                 LOGGER.info("conversation_item_added ignored noise-only user text=%r", text)
+                return
+            if _should_ignore_low_information_transcript(text):
+                LOGGER.info(
+                    "conversation_item_added ignored low-information user text=%r",
+                    text,
+                )
+                return
+            if _should_ignore_post_speech_gibberish(text):
+                LOGGER.info(
+                    "conversation_item_added ignored post-speech short gibberish text=%r",
+                    text,
+                )
                 return
             if local_playback_guard_active():
                 LOGGER.info(
@@ -3196,10 +3799,137 @@ async def entrypoint(ctx: JobContext) -> None:
         room=ctx.room,
         agent=InterruptAssistant(),
     )
+
+    @ctx.room.on("data_received")
+    def _on_room_data(packet) -> None:
+        topic = str(getattr(packet, "topic", "") or "")
+        payload = getattr(packet, "data", b"") or b""
+        if topic == "interrupt/frontgate/room_ready_ack":
+            try:
+                text = payload.decode("utf-8", errors="ignore").strip()
+            except Exception:
+                text = ""
+            if not text:
+                return
+
+            async def _relay_ready_prompt() -> None:
+                ok = True
+                mode = "room_agent_local_fallback"
+                try:
+                    session.say(
+                        text,
+                        allow_interruptions=SETTINGS.agent.allow_interruptions,
+                        add_to_chat_ctx=False,
+                    )
+                    mode = "session_say"
+                except Exception:
+                    LOGGER.warning(
+                        "frontgate ready prompt relay session.say unavailable, fallback to local speak: text=%r",
+                        text,
+                        exc_info=True,
+                    )
+                    ok = await asyncio.to_thread(_speak_local_text_reply_fallback, text)
+                else:
+                    ok = True
+                LOGGER.info("frontgate ready prompt relay: ok=%s mode=%s text=%r", ok, mode, text)
+
+            asyncio.create_task(_relay_ready_prompt())
+            return
+
+        if topic != "interrupt/local_text/transcript":
+            return
+
+        try:
+            message = json.loads(payload.decode("utf-8", errors="ignore"))
+        except Exception:
+            LOGGER.warning("room transcript data decode failed", exc_info=True)
+            return
+        text = _normalize_assistant_text(str(message.get("text", "") or ""))
+        identity = str(getattr(packet, "participant", None) and getattr(packet.participant, "identity", "") or "")
+        if identity and identity != SETTINGS.rtc_endpoint.identity:
+            return
+        if not text:
+            return
+        _remember_reply_language_preference(text)
+        _remember_latest_user_text(text)
+        if (
+            (_looks_like_self_echo_transcript(text) or should_ignore_transcript(text))
+            or _looks_like_recent_assistant_reply_echo(text)
+            or _looks_like_recent_assistant_reprompt(text)
+            or (local_playback_guard_active() and not _looks_like_user_question(text))
+        ):
+            LOGGER.info("room transcript data ignored during local playback guard: text=%r", text)
+            return
+        if _should_ignore_low_information_transcript(text) or _should_ignore_post_speech_gibberish(text):
+            LOGGER.info("room transcript data ignored in local_text backend: text=%r", text)
+            return
+
+        async def _run_local_text_from_data() -> None:
+            handled = await _try_handle_local_text_decision(session, text)
+            LOGGER.info("room transcript data handled by local_text backend: handled=%s text=%r", handled, text)
+
+        asyncio.create_task(_run_local_text_from_data())
+
     room_io = getattr(session, "_room_io", None)
     if room_io is not None:
         room_io.set_participant(SETTINGS.rtc_endpoint.identity)
         LOGGER.info("room input participant pinned: %s", SETTINGS.rtc_endpoint.identity)
+
+    if _is_local_text_room_backend():
+        local_text_busy = {"value": False}
+        pending_room_transcript = {"text": ""}
+
+        @ctx.room.on("transcription_received")
+        def _on_room_transcription(segments, participant, _publication) -> None:
+            identity = str(getattr(participant, "identity", "") or "")
+            if identity != SETTINGS.rtc_endpoint.identity:
+                return
+            final_texts = [
+                _normalize_assistant_text(getattr(segment, "text", "") or "")
+                for segment in (segments or [])
+                if getattr(segment, "final", False)
+            ]
+            text = next((item for item in final_texts if item), "")
+            if not text:
+                return
+            if local_playback_guard_active() or should_ignore_transcript(text):
+                LOGGER.info(
+                    "room transcription ignored during local playback guard: identity=%s text=%r",
+                    identity,
+                    text,
+                )
+                return
+            if _looks_like_recent_assistant_reply_echo(text):
+                LOGGER.info("room transcription ignored recent assistant reply echo: identity=%s text=%r", identity, text)
+                return
+            if _should_ignore_low_information_transcript(text) or _should_ignore_post_speech_gibberish(text):
+                LOGGER.info("room transcription ignored in local_text backend: identity=%s text=%r", identity, text)
+                return
+            if local_text_busy["value"]:
+                pending_room_transcript["text"] = text
+                LOGGER.info("room transcription queued while local_text backend busy: text=%r", text)
+                return
+
+            async def _run_local_text() -> None:
+                local_text_busy["value"] = True
+                try:
+                    current_text = text
+                    current_identity = identity
+                    while current_text:
+                        pending_room_transcript["text"] = ""
+                        handled = await _try_handle_local_text_decision(session, current_text)
+                        LOGGER.info(
+                            "room transcription handled by local_text backend: handled=%s identity=%s text=%r",
+                            handled,
+                            current_identity,
+                            current_text,
+                        )
+                        current_text = pending_room_transcript["text"]
+                        current_identity = SETTINGS.rtc_endpoint.identity
+                finally:
+                    local_text_busy["value"] = False
+
+            asyncio.create_task(_run_local_text())
 
 
 async def on_request(req: JobRequest) -> None:
