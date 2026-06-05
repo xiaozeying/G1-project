@@ -5,6 +5,95 @@
 
 ## 介绍
 > ***员工双休，教程会在工作日完善，可先自己尝试，若有疑问可加群联系。***
+
+## 同机型刷机恢复入口
+
+如果目标是把一台同型号、刚刷机的 G1 机器尽快拉回当前这套语音主链，先不要从零手敲各子模块命令，统一从仓库根目录走恢复入口：
+
+```bash
+cd ~/HongTu
+./restore_same_model_g1.sh
+```
+
+只做体检不启动服务：
+
+```bash
+./restore_same_model_g1.sh --verify-only
+```
+
+如果现场明确要启用 compose 运行面：
+
+```bash
+./restore_same_model_g1.sh --enable-compose
+```
+
+这层入口会：
+
+- 统一 repo root / `interrupt/` / `g1-wakeword/` / `OM1/` 路径
+- 自动校正 `~/HongTu -> 实际仓库根目录` 软链
+- 检查关键恢复边界
+- 委托 `interrupt/restore_robot_voice_chain.sh` 完成前门主链恢复
+
+## 当前恢复边界
+
+当前仓库已经能直接跟着 git 恢复的主要部分：
+
+- `interrupt/`
+- `g1-wakeword/`
+- `G1Nav2D/src/`
+- `G1Nav2D/bridge/g1_nav_bridge.py`
+- `G1Nav2D/run_nav_bridge.sh`
+
+当前还不能只靠 `git clone` 自动完整恢复的部分：
+
+- `OM1/`
+  - 目前没有完整纳入 git 跟踪
+- 私有现场配置
+  - `interrupt/.env.local`
+- 本地 Python 运行环境
+  - `interrupt/.venv`
+  - `OM1/.venv-g1`
+  - `wakeword-clean`
+- 机器人现场设备状态
+  - Pulse / USB 音频
+  - 相机
+  - 网络与在线服务可达性
+
+也就是说，当前最准确的口径是：
+
+- 这套仓库已经可以作为“同机型恢复的统一代码入口”
+- 但还不是“完全不依赖现场资产的纯源码镜像”
+
+如果缺少 `OM1/`，恢复入口会明确中止，并要求你提供：
+
+1. 本地 `OM1/` 目录
+2. 或 `interrupt/backups/private/<stamp>/om1-voice-assets.tar.gz`
+
+## 当前推荐恢复顺序
+
+1. 把仓库恢复到目标机器，例如 `/data/HongTu`
+2. 建兼容软链：
+
+```bash
+ln -sfn /data/HongTu ~/HongTu
+```
+
+3. 确认以下目录存在：
+   - `interrupt/`
+   - `g1-wakeword/`
+   - `OM1/` 或对应备份包
+4. 执行：
+
+```bash
+./restore_same_model_g1.sh
+```
+
+5. 恢复后检查：
+
+```bash
+systemctl --user status interrupt-frontgate.service --no-pager
+tail -n 80 interrupt/logs/frontgate.log
+```
 ## 部署
 
 ### 克隆仓库
