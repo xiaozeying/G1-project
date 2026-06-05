@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env.local}"
 SERVICE_NAME="${INTERRUPT_FRONTGATE_SERVICE_NAME:-interrupt-frontgate.service}"
+SKIP_RESTART="${INTERRUPT_DIALOGUE_MODE_SKIP_RESTART:-0}"
 PROFILE_DIR="${ROOT_DIR}/config/dialogue_modes"
 BASE_PROFILE="${PROFILE_DIR}/frontgate_base.env"
 ONLINE_PROFILE="${PROFILE_DIR}/online.env"
@@ -191,6 +192,10 @@ apply_offline_mode() {
 }
 
 restart_service() {
+  if [[ "${SKIP_RESTART}" == "1" ]]; then
+    echo "skip service restart: INTERRUPT_DIALOGUE_MODE_SKIP_RESTART=1"
+    return 0
+  fi
   systemctl --user restart "${SERVICE_NAME}"
   sleep 2
   systemctl --user --no-pager --full status "${SERVICE_NAME}" | sed -n '1,18p'

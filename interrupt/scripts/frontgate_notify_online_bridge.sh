@@ -2,9 +2,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BRIDGE_URL="${INTERRUPT_FRONTGATE_ONLINE_BRIDGE_URL:-http://127.0.0.1:8787/wake-session}"
 PYTHON_BIN="${INTERRUPT_FRONTGATE_NOTIFY_PYTHON:-python3}"
 REQUEST_TIMEOUT_S="${INTERRUPT_FRONTGATE_ONLINE_BRIDGE_TIMEOUT_S:-900}"
+DIALOGUE_MODE="${INTERRUPT_DIALOGUE_MODE:-online}"
+ONLINE_BRIDGE_URL="${INTERRUPT_FRONTGATE_ONLINE_BRIDGE_URL:-http://127.0.0.1:8787/wake-session}"
+OFFLINE_BRIDGE_URL="${INTERRUPT_FRONTGATE_OFFLINE_BRIDGE_URL:-http://127.0.0.1:8788/wake-session}"
+
+resolve_bridge_url() {
+  case "${DIALOGUE_MODE}" in
+    offline)
+      printf '%s\n' "${OFFLINE_BRIDGE_URL}"
+      ;;
+    *)
+      printf '%s\n' "${ONLINE_BRIDGE_URL}"
+      ;;
+  esac
+}
+
+BRIDGE_URL="$(resolve_bridge_url)"
 
 exec "${PYTHON_BIN}" - "${BRIDGE_URL}" "${REQUEST_TIMEOUT_S}" <<'PY'
 from __future__ import annotations

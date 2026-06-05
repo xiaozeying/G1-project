@@ -18,7 +18,15 @@
 
 - 默认推荐模式是 `online`
 - `offline` 入口保留，但当前仍未开发完整，只能视为实验链路
-- 现场切换统一通过 `./robot_dialogue_mode.sh`，不要手改 `.env.local`
+- 现场切换有两层入口：
+  - 非容器运行面：`./robot_dialogue_mode.sh`
+  - 统一容器运行面：`./scripts/mode.sh` 和 `./scripts/recover.sh`
+
+两者职责不要混用：
+
+- `./robot_dialogue_mode.sh` 只负责宿主机服务形态，核心是同步 `.env.local` 并重启 `interrupt-frontgate.service`
+- `./scripts/mode.sh` 只负责统一容器形态，核心是同步 `.env.local` 并重建 `voice-stack` 容器入口
+- `./scripts/recover.sh` 用于新机恢复、故障恢复、重拉整套 `voice-stack`
 
 常用命令：
 
@@ -26,6 +34,15 @@
 ./robot_dialogue_mode.sh online
 ./robot_dialogue_mode.sh offline
 ./robot_dialogue_mode.sh status
+```
+
+统一容器运行面常用命令：
+
+```bash
+cp deploy/compose/env.voice-stack.example deploy/compose/env.voice-stack
+./scripts/recover.sh online
+./scripts/mode.sh offline
+./scripts/mode.sh status
 ```
 
 当前固定口径：
@@ -53,20 +70,51 @@
 
 - [TRILINGUAL_FRONTGATE_DIALOG_OPTIMIZATION_EXECUTION_PLAN_2026-06-05.md](./docs/TRILINGUAL_FRONTGATE_DIALOG_OPTIMIZATION_EXECUTION_PLAN_2026-06-05.md)
 
-## 3. 一期拆分容器口径
+## 3. 统一容器口径
 
-当前建议先固定两块容器边界，不把未完成的离线链强行并进去：
+当前仓库已经有两层容器化口径：
+
+1. 一期拆分：
 
 - `wakeword-frontgate`
 - `online-brain`
 
-这是一套一期 split 方案，目标是先把真实唤醒词和稳定在线主链拆开、固定、可恢复。
+2. 统一 voice-stack：
+
+- `wakeword-frontgate`
+- `online-brain`
+- `offline-brain`
+- `ollama`
+
+这套统一编排的目标不是宣称 `offline` 已经完整生产化，而是把：
+
+- 模式切换
+- 容器恢复
+- 一键部署
+- 开机自启
+
+全部收口到同一套命令接口上。
 
 相关文档与部署文件：
 
 - [WAKEWORD_ONLINE_SPLIT_CONTAINERS_2026-06-05.md](./docs/WAKEWORD_ONLINE_SPLIT_CONTAINERS_2026-06-05.md)
 - [docker-compose.robot.wakeword-online.yaml](./deploy/compose/docker-compose.robot.wakeword-online.yaml)
 - [deploy_robot_wakeword_online_over_ssh.sh](./deploy/compose/deploy_robot_wakeword_online_over_ssh.sh)
+- [docker-compose.voice-stack.yaml](./deploy/compose/docker-compose.voice-stack.yaml)
+- [env.voice-stack.example](./deploy/compose/env.voice-stack.example)
+- [deploy_robot_voice_stack_over_ssh.sh](./deploy/compose/deploy_robot_voice_stack_over_ssh.sh)
+- [interrupt-voice-stack-compose.service](./deploy/systemd/user/interrupt-voice-stack-compose.service)
+- [scripts/mode.sh](./scripts/mode.sh)
+- [scripts/recover.sh](./scripts/recover.sh)
+
+统一容器运行面的最小闭环是：
+
+```bash
+cp deploy/compose/env.voice-stack.example deploy/compose/env.voice-stack
+./scripts/recover.sh online
+./scripts/mode.sh offline
+./deploy/compose/deploy_robot_voice_stack_over_ssh.sh --activate
+```
 
 ## 4. 总体版图
 
@@ -609,6 +657,16 @@ user speech
 ./robot_dialogue_mode.sh status
 ```
 
+如果当前使用统一容器运行面：
+
+```bash
+cp deploy/compose/env.voice-stack.example deploy/compose/env.voice-stack
+./scripts/recover.sh online
+./scripts/mode.sh offline
+./scripts/mode.sh online
+./scripts/mode.sh status
+```
+
 如果当前目录是仓库上一级：
 
 ```bash
@@ -618,6 +676,13 @@ user speech
 ```
 
 当前脚本会把“模式变量”和“前门稳定变量”一起原子写入并重启 `interrupt-frontgate.service`，避免只切到一半。
+
+统一容器运行面则会：
+
+- 通过 `switch_dialogue_mode.sh` 更新 `.env.local`
+- 保持 `online-brain / offline-brain / ollama` 常驻
+- 只让 `wakeword-frontgate` 按当前模式把唤醒事件路由到对应 brain
+- `recover.sh` 负责整套容器恢复，`mode.sh` 负责日常 online/offline 切换
 
 当前现场口径请固定理解为：
 
@@ -714,6 +779,16 @@ user speech
 | `INTERRUPT_FRONTGATE_ROOM_PRE_DISPATCH_DELAY_S` | room-agent 启动后预留时间 | `2` |
 | `INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS` | 前门房间空闲超时 | `180000` |
 | `INTERRUPT_FRONTGATE_SESSION_EXIT_SIGNAL_FILE` | 房间退出信号文件 | `/tmp/interrupt_frontgate_room_exit.signal` |
+
+### 11.4.1 统一容器链
+
+| 变量 | 作用 | 典型值 |
+| --- | --- | --- |
+| `INTERRUPT_FRONTGATE_ONLINE_BRIDGE_URL` | 前门命中在线 brain 的桥接地址 | `http://127.0.0.1:8787/wake-session` |
+| `INTERRUPT_FRONTGATE_OFFLINE_BRIDGE_URL` | 前门命中离线 brain 的桥接地址 | `http://127.0.0.1:8788/wake-session` |
+| `INTERRUPT_FRONTGATE_ONLINE_BRIDGE_PORT` | online-brain 桥接端口 | `8787` |
+| `INTERRUPT_FRONTGATE_OFFLINE_BRIDGE_PORT` | offline-brain 桥接端口 | `8788` |
+| `HOST_OLLAMA_MODELS_DIR` | ollama 模型持久化目录 | `/data/HongTu/interrupt/volumes/ollama-models` |
 
 ### 11.5 音频链
 

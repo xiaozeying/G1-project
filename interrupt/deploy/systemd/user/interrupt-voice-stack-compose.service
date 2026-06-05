@@ -1,0 +1,15 @@
+[Unit]
+Description=Interrupt Voice Stack Compose
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/data/HongTu/interrupt
+ExecStart=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.voice-stack -f /data/HongTu/interrupt/deploy/compose/docker-compose.voice-stack.yaml up -d --build ollama offline-brain online-brain wakeword-frontgate
+ExecStop=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.voice-stack -f /data/HongTu/interrupt/deploy/compose/docker-compose.voice-stack.yaml stop wakeword-frontgate online-brain offline-brain ollama
+TimeoutStartSec=0
+
+[Install]
+WantedBy=default.target
