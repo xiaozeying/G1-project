@@ -42,7 +42,43 @@
 - 各类导航桥接与地图资产
 - 其他历史语音/视觉实验目录
 
-## 3. 同机型刷机恢复入口
+## 3. 同机型刷机前准备入口
+
+如果设备还没刷机，建议先从仓库根目录准备语音恢复包：
+
+```bash
+cd ~/HongTu
+./prepare_same_model_g1_voice_bundle.sh
+```
+
+只检查准备条件，不实际打包：
+
+```bash
+./prepare_same_model_g1_voice_bundle.sh --verify-only
+```
+
+这个入口会委托：
+
+- `interrupt/prepare_robot_wipe_bundle.sh`
+- `interrupt/package_robot_voice_assets.sh`
+- `interrupt/backup_robot_voice_chain.sh`
+
+输出目录默认位于：
+
+```text
+interrupt/backups/private/<stamp>/
+```
+
+关键产物包括：
+
+- `robot-interrupt.env.local`
+- `om1-voice-assets.tar.gz`
+- `g1-wakeword-assets.tar.gz`
+- Python 环境 freeze 清单
+- 设备快照
+- `switch-machine-bundle.tgz`
+
+## 4. 同机型刷机恢复入口
 
 如果目标是把同型号、刚刷机的 G1 机器尽快拉回当前语音主链，统一从仓库根目录执行：
 
@@ -70,7 +106,7 @@ cd ~/HongTu
 - 检查恢复边界
 - 委托 `interrupt/restore_robot_voice_chain.sh` 完成语音主链恢复
 
-## 4. 当前恢复边界
+## 5. 当前恢复边界
 
 当前能跟随 git 恢复的主要语音资产：
 
@@ -99,33 +135,41 @@ cd ~/HongTu
 1. 本地 `OM1/` 目录
 2. 或 `interrupt/backups/private/<stamp>/om1-voice-assets.tar.gz`
 
-## 5. 当前推荐恢复顺序
+## 6. 当前推荐恢复顺序
 
-1. 把仓库恢复到目标机器，例如 `/data/HongTu`
-2. 建兼容软链：
+推荐按下面的闭环顺序执行：
+
+1. 刷机前先执行：
+
+```bash
+./prepare_same_model_g1_voice_bundle.sh
+```
+
+2. 把仓库恢复到目标机器，例如 `/data/HongTu`
+3. 建兼容软链：
 
 ```bash
 ln -sfn /data/HongTu ~/HongTu
 ```
 
-3. 确认以下目录存在：
+4. 确认以下目录存在：
    - `interrupt/`
    - `g1-wakeword/`
    - `OM1/` 或对应备份包
-4. 执行：
+5. 执行：
 
 ```bash
 ./restore_same_model_g1.sh
 ```
 
-5. 恢复后检查：
+6. 恢复后检查：
 
 ```bash
 systemctl --user status interrupt-frontgate.service --no-pager
 tail -n 80 interrupt/logs/frontgate.log
 ```
 
-## 6. 日常切换入口
+## 7. 日常切换入口
 
 当前现场统一通过下面的脚本切换语音模式，不建议手改 `.env.local`：
 
@@ -147,7 +191,7 @@ cd interrupt
   - `INTERRUPT_AGENT_BACKEND=local_text_ollama`
   - `INTERRUPT_DIALOGUE_MODE_STABILITY=experimental_incomplete`
 
-## 7. 前门三语优化现状
+## 8. 前门三语优化现状
 
 当前仓库已经固定了前门三语优化的一期收口：
 
@@ -161,7 +205,7 @@ cd interrupt
 
 - `interrupt/docs/TRILINGUAL_FRONTGATE_DIALOG_OPTIMIZATION_EXECUTION_PLAN_2026-06-05.md`
 
-## 8. 一期 split container 现状
+## 9. 一期 split container 现状
 
 当前 split container 只收口语音链的一期方案：
 
@@ -179,10 +223,11 @@ cd interrupt
 
 - `interrupt/docs/WAKEWORD_ONLINE_SPLIT_CONTAINERS_2026-06-05.md`
 
-## 9. 关键入口文件
+## 10. 关键入口文件
 
 语音主链的主要入口：
 
+- `prepare_same_model_g1_voice_bundle.sh`
 - `restore_same_model_g1.sh`
 - `interrupt/restore_robot_voice_chain.sh`
 - `interrupt/run_robot_frontgate_session.sh`
@@ -191,12 +236,12 @@ cd interrupt
 - `interrupt/run_room_agent.sh`
 - `interrupt/robot_dialogue_mode.sh`
 
-## 10. 最小技术结论
+## 11. 最小技术结论
 
 当前仓库已经可以作为同机型 G1 语音主链恢复的统一代码入口，但它还不是完全自包含的纯源码镜像。
 
 最准确的说法是：
 
-- 语音主链代码和恢复脚本已经收口
+- 语音主链代码、刷机前准备脚本和恢复脚本已经收口
 - 真实现场恢复仍依赖 `OM1/`、私有配置、虚拟环境和设备状态
 - 导航链路不在当前 README 的技术说明范围内
