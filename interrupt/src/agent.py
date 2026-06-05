@@ -18,7 +18,15 @@ from urllib.parse import urlparse
 
 from google.genai import types as google_types
 from livekit.agents.llm import function_tool
-from livekit.agents import Agent, AgentServer, AgentSession, JobContext, JobRequest, cli
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    JobExecutorType,
+    JobRequest,
+    cli,
+)
 from livekit.api import AccessToken, TokenVerifier, VideoGrants
 from livekit.plugins import google
 
@@ -127,6 +135,10 @@ ENABLE_PATCHED_JOB_TOKEN = os.getenv(
     "INTERRUPT_AGENT_PATCH_JOB_TOKEN",
     "1",
 ).strip().lower() not in {"0", "false", "no", "off"}
+FRONTGATE_TEXT_INPUT_ONLY = os.getenv(
+    "INTERRUPT_RTC_TEXT_INPUT_ONLY",
+    "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 LOCAL_TEXT_DECISION_MODE = SETTINGS.agent.local_text_decision_mode
 AGENT_RUNTIME_MODE = SETTINGS.agent.runtime_mode
 ENABLE_SAFE_ACTION_GATEWAY = os.getenv(
@@ -199,6 +211,9 @@ _RECENT_ASSISTANT_REPLIES: list[tuple[str, float]] = []
 _LANGUAGE_STATE_LOCK = threading.Lock()
 _LAST_DETECTED_USER_LANGUAGE = "zh-CN"
 _FORCED_REPLY_LANGUAGE = ""
+_LAST_HINTED_USER_TEXT = ""
+_LAST_HINTED_USER_LANGUAGE = ""
+_LAST_HINTED_USER_AT = 0.0
 _RECENT_INTENT_LOCK = threading.Lock()
 _RECENT_INTENTS: dict[str, dict[str, float]] = {}
 OFFLINE_SINGLEBOX_ALLOWED_LOCAL_TOOLS = frozenset(
@@ -215,6 +230,16 @@ OFFLINE_SINGLEBOX_ALLOWED_LOCAL_TOOLS = frozenset(
 REPLY_LANGUAGE_MANDARIN = "zh-CN"
 REPLY_LANGUAGE_CANTONESE = "zh-YUE"
 REPLY_LANGUAGE_ENGLISH = "en"
+FRONTGATE_HINT_REUSE_WINDOW_S = float(
+    os.getenv("INTERRUPT_FRONTGATE_HINT_REUSE_WINDOW_S", "8.0").strip() or "8.0"
+)
+DEFAULT_NAVIGATION_ALIAS_MAP = {
+    "门口": "entrance",
+    "門口": "entrance",
+    "door": "entrance",
+    "front door": "entrance",
+}
+DEFAULT_NAVIGATION_ARRIVAL_INTRO_LOCATIONS = frozenset({"门口", "門口", "entrance"})
 
 
 def _livekit_proxy() -> str | None:
@@ -232,7 +257,39 @@ def _livekit_proxy() -> str | None:
     # still uses the outbound proxy configured in the environment.
     if urllib.request.proxy_bypass(host) or urllib.request.proxy_bypass(netloc):
         return None
+    dedicated = os.getenv("INTERRUPT_LIVEKIT_PROXY", "").strip()
+    if dedicated:
+        return dedicated
     return os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+
+
+def _gemini_realtime_proxy() -> str | None:
+    for key in (
+        "INTERRUPT_GEMINI_PROXY",
+        "GEMINI_WSS_PROXY",
+        "WSS_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _gemini_realtime_http_options() -> google_types.HttpOptions | None:
+    proxy = _gemini_realtime_proxy()
+    client_args: dict[str, object] = {"trust_env": False}
+    async_client_args: dict[str, object] = {"trust_env": False}
+    if proxy:
+        client_args["proxy"] = proxy
+        async_client_args["proxy"] = proxy
+    if not proxy and not client_args and not async_client_args:
+        return None
+    return google_types.HttpOptions(
+        client_args=client_args,
+        async_client_args=async_client_args,
+    )
 
 
 def _env_float(name: str) -> float | None:
@@ -262,6 +319,19 @@ def _worker_load_override() -> float | None:
     if forced is None:
         return None
     return max(0.0, min(forced, 0.99))
+
+
+def _job_executor_type() -> JobExecutorType:
+    raw = os.getenv("INTERRUPT_AGENT_JOB_EXECUTOR_TYPE", "thread").strip().lower()
+    if raw == "process":
+        return JobExecutorType.PROCESS
+    if raw in {"thread", "threaded"}:
+        return JobExecutorType.THREAD
+    LOGGER.warning(
+        "invalid INTERRUPT_AGENT_JOB_EXECUTOR_TYPE=%r, fallback to thread",
+        raw,
+    )
+    return JobExecutorType.THREAD
 
 
 def _normalize_led_color(color: str) -> str:
@@ -360,9 +430,12 @@ def _normalize_assistant_text(text: str) -> str:
     normalized = " ".join((text or "").split()).strip()
     if not normalized:
         return ""
+    normalized = re.sub(r"(?i)\s*<(?:noise|unk)>\s*", " ", normalized)
+    normalized = re.sub(r"(?i)\b(?:noise|noises|background\s*noise|static|silence|empty|unk)\b", " ", normalized)
     normalized = _CJK_LATIN_DIGIT_RE.sub("", normalized)
     normalized = _PUNCT_SPACING_RE.sub(r"\1", normalized)
-    return normalized.strip()
+    normalized = " ".join(normalized.split()).strip()
+    return normalized
 
 
 def _normalize_tts_text(text: str) -> str:
@@ -663,6 +736,50 @@ def _extract_explicit_language_tag(text: str) -> str | None:
         if tag in lowered:
             return language
     return None
+
+
+def _normalize_reply_language_hint(language: str) -> str:
+    normalized = (language or "").strip().lower()
+    alias_map = {
+        "zh": REPLY_LANGUAGE_MANDARIN,
+        "zh-cn": REPLY_LANGUAGE_MANDARIN,
+        "cmn": REPLY_LANGUAGE_MANDARIN,
+        "mandarin": REPLY_LANGUAGE_MANDARIN,
+        "yue": REPLY_LANGUAGE_CANTONESE,
+        "zh-yue": REPLY_LANGUAGE_CANTONESE,
+        "cantonese": REPLY_LANGUAGE_CANTONESE,
+        "en": REPLY_LANGUAGE_ENGLISH,
+        "en-us": REPLY_LANGUAGE_ENGLISH,
+        "en-gb": REPLY_LANGUAGE_ENGLISH,
+        "english": REPLY_LANGUAGE_ENGLISH,
+    }
+    return alias_map.get(normalized, "")
+
+
+def _reply_language_instruction(language: str) -> str:
+    normalized = _normalize_reply_language_hint(language) or language
+    if normalized == REPLY_LANGUAGE_CANTONESE:
+        return "This turn, reply only in natural Cantonese. Do not use Mandarin or English."
+    if normalized == REPLY_LANGUAGE_ENGLISH:
+        return "This turn, reply only in natural English. Do not use Mandarin or Cantonese."
+    return "This turn, reply only in natural Mandarin Chinese. Do not use Cantonese or English."
+
+
+def _resolve_reply_language_detection(text: str, language_hint: str = "") -> tuple[str, str]:
+    normalized_text = _normalize_assistant_text(text)
+    hinted = _normalize_reply_language_hint(language_hint)
+    if hinted:
+        return hinted, "hint"
+    if normalized_text:
+        with _LANGUAGE_STATE_LOCK:
+            if (
+                _LAST_HINTED_USER_TEXT
+                and normalized_text == _LAST_HINTED_USER_TEXT
+                and (time.monotonic() - _LAST_HINTED_USER_AT) <= FRONTGATE_HINT_REUSE_WINDOW_S
+                and _LAST_HINTED_USER_LANGUAGE
+            ):
+                return _LAST_HINTED_USER_LANGUAGE, "cached_hint"
+    return _detect_reply_language(text), "text"
 
 
 def _detect_reply_language(text: str) -> str:
@@ -1093,19 +1210,27 @@ def _tool_call_allowed_in_offline_singlebox(tool_call: LocalTextToolCall) -> boo
     return tool_call.name in OFFLINE_SINGLEBOX_ALLOWED_LOCAL_TOOLS
 
 
-def _remember_reply_language_preference(text: str) -> None:
+def _remember_reply_language_preference(text: str, language_hint: str = "") -> None:
     forced = _detect_forced_reply_language(text)
-    detected = _detect_reply_language(text)
+    detected, detection_source = _resolve_reply_language_detection(text, language_hint)
+    normalized_text = _normalize_assistant_text(text)
     with _LANGUAGE_STATE_LOCK:
         global _FORCED_REPLY_LANGUAGE, _LAST_DETECTED_USER_LANGUAGE
+        global _LAST_HINTED_USER_TEXT, _LAST_HINTED_USER_LANGUAGE, _LAST_HINTED_USER_AT
         if forced is not None:
             _FORCED_REPLY_LANGUAGE = forced
             LOGGER.info("reply language mode updated: forced=%r by text=%r", forced or "auto", text)
         _LAST_DETECTED_USER_LANGUAGE = detected
+        if detection_source == "hint" and normalized_text:
+            _LAST_HINTED_USER_TEXT = normalized_text
+            _LAST_HINTED_USER_LANGUAGE = detected
+            _LAST_HINTED_USER_AT = time.monotonic()
     LOGGER.info(
-        "reply language detected: detected=%s effective=%s text=%r",
+        "reply language detected: detected=%s effective=%s hint=%s source=%s text=%r",
         detected,
         _preferred_reply_language(),
+        language_hint,
+        detection_source,
         text,
     )
 
@@ -1591,6 +1716,42 @@ def _builtin_intro_reply() -> str:
         "你好！我係笨笨同學，中國移動環球智算中心嘅專屬智能導覽機械人。我可以用粵語、普通話同英文同您交流。今日好高興喺呢度為您服務！如果您想了解數據中心嘅任何資訊，隨時同我講哦。",
         "Hello! I am Benben, the dedicated intelligent guide robot for China Mobile Global Intelligent Computing Center. I can talk with you in Cantonese, Mandarin, and English. I am very happy to serve you here today. If you would like to know anything about the data center, just let me know.",
     )
+
+
+def _navigation_alias_map() -> dict[str, str]:
+    alias_map = dict(DEFAULT_NAVIGATION_ALIAS_MAP)
+    raw = os.getenv("INTERRUPT_NAV_LOCATION_ALIASES", "").strip()
+    if not raw:
+        return alias_map
+    for item in raw.split(","):
+        chunk = item.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        source, target = chunk.split("=", 1)
+        source = source.strip()
+        target = target.strip()
+        if source and target:
+            alias_map[source] = target
+    return alias_map
+
+
+def _resolve_navigation_location_label(location: str) -> str:
+    normalized = (location or "").strip()
+    if not normalized:
+        return ""
+    return _navigation_alias_map().get(normalized, normalized)
+
+
+def _arrival_intro_locations() -> set[str]:
+    configured = os.getenv("INTERRUPT_NAV_ARRIVAL_INTRO_LOCATIONS", "").strip()
+    if not configured:
+        return set(DEFAULT_NAVIGATION_ARRIVAL_INTRO_LOCATIONS)
+    return {item.strip() for item in configured.split(",") if item.strip()}
+
+
+def _should_announce_intro_on_navigation_arrival(requested_location: str, resolved_location: str) -> bool:
+    candidates = _arrival_intro_locations()
+    return requested_location in candidates or resolved_location in candidates
 
 
 def _looks_like_local_tool_failure(text: str) -> bool:
@@ -2141,7 +2302,7 @@ def _can_accept_commands() -> bool:
         return (
             not _ACTION_EXECUTING.is_set()
             and _LAST_AGENT_STATE == "listening"
-            and _LAST_USER_STATE == "listening"
+            and _LAST_USER_STATE in {"", "listening"}
         )
 
 
@@ -2378,11 +2539,23 @@ async def _navigate_to_saved_location_local(location: str, *, source: str) -> st
         if not allowed:
             return denial_text
     await asyncio.to_thread(_speak_local_tool_ack, _navigation_ack_text(location))
-    result = await asyncio.to_thread(G1_ADAPTER.navigate_to_location, location)
+    resolved_location = _resolve_navigation_location_label(location)
+    wait_for_arrival_intro = _should_announce_intro_on_navigation_arrival(location, resolved_location)
+    wait_timeout_s = float(
+        os.getenv("INTERRUPT_NAV_ARRIVAL_WAIT_TIMEOUT_S", "180").strip() or "180"
+    )
+    result = await asyncio.to_thread(
+        G1_ADAPTER.navigate_to_location,
+        resolved_location,
+        wait=wait_for_arrival_intro,
+        wait_timeout_s=wait_timeout_s if wait_for_arrival_intro else 0.0,
+    )
     LOGGER.info(
-        "navigate to location executed: source=%s location=%s ok=%s rc=%s stdout=%r stderr=%r",
+        "navigate to location executed: source=%s requested=%s resolved=%s wait_for_arrival_intro=%s ok=%s rc=%s stdout=%r stderr=%r",
         source,
         location,
+        resolved_location,
+        wait_for_arrival_intro,
         result.ok,
         result.returncode,
         result.stdout,
@@ -2390,13 +2563,8 @@ async def _navigate_to_saved_location_local(location: str, *, source: str) -> st
     )
     payload = _parse_command_json(result.stdout)
     if result.ok:
-        if payload and payload.get("location"):
-            resolved = str(payload["location"]).strip() or location
-            return _localized_text(
-                f"正在前往{resolved}。",
-                f"而家前往{resolved}。",
-                f"Heading to {resolved} now.",
-            )
+        if wait_for_arrival_intro:
+            return _builtin_intro_reply()
         return _localized_text(
             f"正在前往{location}。",
             f"而家前往{location}。",
@@ -3317,6 +3485,7 @@ def _build_session() -> AgentSession:
         if SETTINGS.agent.enable_output_transcription
         else None,
         "realtime_input_config": _build_realtime_input_config(),
+        "http_options": _gemini_realtime_http_options(),
     }
     if SETTINGS.agent.language and SETTINGS.agent.language not in {"zh-CN"}:
         model_kwargs["language"] = SETTINGS.agent.language
@@ -3383,6 +3552,62 @@ def _should_skip_local_tts_fallback() -> bool:
     assistant_mode = str(getattr(SETTINGS.feedback, "assistant_audio_mode", "") or "").strip().lower()
     tool_ack_mode = str(getattr(SETTINGS.feedback, "local_tool_ack_audio_mode", "") or "").strip().lower()
     return assistant_mode == "transport_only" and tool_ack_mode == "transport_only"
+
+
+def _transport_only_assistant_audio() -> bool:
+    assistant_mode = str(getattr(SETTINGS.feedback, "assistant_audio_mode", "") or "").strip().lower()
+    return assistant_mode == "transport_only"
+
+
+def _frontgate_ready_prompt_instructions(text: str) -> str:
+    normalized = _normalize_assistant_text(text) or "现在可以了"
+    return (
+        "这是一次前门进入房间成功后的就绪提示。"
+        f"请立刻只说这一句，不要改写，不要补充，不要调用工具：{normalized}"
+    )
+
+
+async def _route_frontgate_text_input(session: AgentSession, text: str, language_hint: str = "") -> bool:
+    normalized = _normalize_assistant_text(text)
+    if not normalized:
+        return False
+    _mark_effective_user_input(normalized)
+    _remember_reply_language_preference(normalized, language_hint)
+    _remember_latest_user_text(normalized)
+    turn_language = _preferred_reply_language()
+    turn_instructions = _reply_language_instruction(turn_language)
+    if SETTINGS.agent.backend == "gemini_realtime":
+        try:
+            session.generate_reply(
+                user_input=normalized,
+                instructions=turn_instructions,
+                allow_interruptions=SETTINGS.agent.allow_interruptions,
+                input_modality="text",
+            )
+            LOGGER.info(
+                "frontgate text input routed to gemini_realtime: text=%r language=%s",
+                normalized,
+                turn_language,
+            )
+            return True
+        except RuntimeError as exc:
+            message = str(exc)
+            if "isn't running" in message or "is closing" in message:
+                LOGGER.warning(
+                    "frontgate text input dropped because AgentSession is no longer running; requesting room exit: text=%r error=%s",
+                    normalized,
+                    message,
+                )
+                _signal_frontgate_session_exit("agent_session_not_running")
+                return False
+            LOGGER.exception("frontgate text input route failed for gemini_realtime: text=%r", normalized)
+            return False
+        except Exception:
+            LOGGER.exception("frontgate text input route failed for gemini_realtime: text=%r", normalized)
+            return False
+    handled = await _try_handle_local_text_decision(session, normalized)
+    LOGGER.info("frontgate text input routed to local_text backend: handled=%s text=%r", handled, normalized)
+    return handled
 
 
 def _wire_debug_events(session: AgentSession) -> None:
@@ -3545,15 +3770,18 @@ def _wire_debug_events(session: AgentSession) -> None:
     @session.on("agent_state_changed")
     def _on_agent_state(ev: object) -> None:
         _bind_rt_session_hooks()
+        old_state = getattr(ev, "old_state", "")
         new_state = getattr(ev, "new_state", "")
         _update_session_states(agent_state=new_state)
         LOGGER.info(
             "agent_state_changed: %s -> %s",
-            getattr(ev, "old_state", ""),
+            old_state,
             new_state,
         )
-        if getattr(ev, "old_state", "") == "speaking" and new_state == "listening":
+        if old_state == "speaking" and new_state == "listening":
             _mark_agent_speech_ended()
+        if old_state == "initializing" and new_state == "listening":
+            _resume_active_listen_led_delayed("room_ready")
 
     @session.on("overlapping_speech")
     def _on_overlapping_speech(ev: object) -> None:
@@ -3604,7 +3832,7 @@ def _wire_debug_events(session: AgentSession) -> None:
             if is_final:
                 interrupted_while_speaking["value"] = False
             return
-        if local_playback_guard_active():
+        if local_playback_guard_active() and _should_ignore_user_backchannel(transcript):
             LOGGER.info(
                 "user_input_transcribed ignored during local playback guard: final=%s text=%r",
                 is_final,
@@ -3665,7 +3893,7 @@ def _wire_debug_events(session: AgentSession) -> None:
                     text,
                 )
                 return
-            if local_playback_guard_active():
+            if local_playback_guard_active() and _should_ignore_user_backchannel(text):
                 LOGGER.info(
                     "conversation_item_added ignored during local playback guard text=%r",
                     text,
@@ -3814,15 +4042,15 @@ async def entrypoint(ctx: JobContext) -> None:
 
             async def _relay_ready_prompt() -> None:
                 ok = True
-                mode = "room_agent_local_fallback"
+                mode = "session_say"
                 try:
                     session.say(
                         text,
                         allow_interruptions=SETTINGS.agent.allow_interruptions,
                         add_to_chat_ctx=False,
                     )
-                    mode = "session_say"
                 except Exception:
+                    mode = "local_tts_fallback"
                     LOGGER.warning(
                         "frontgate ready prompt relay session.say unavailable, fallback to local speak: text=%r",
                         text,
@@ -3845,18 +4073,20 @@ async def entrypoint(ctx: JobContext) -> None:
             LOGGER.warning("room transcript data decode failed", exc_info=True)
             return
         text = _normalize_assistant_text(str(message.get("text", "") or ""))
+        language_hint = str(message.get("language", "") or "")
+        text_input_only = bool(message.get("text_input_only")) or FRONTGATE_TEXT_INPUT_ONLY
         identity = str(getattr(packet, "participant", None) and getattr(packet.participant, "identity", "") or "")
         if identity and identity != SETTINGS.rtc_endpoint.identity:
             return
         if not text:
             return
-        _remember_reply_language_preference(text)
+        _remember_reply_language_preference(text, language_hint)
         _remember_latest_user_text(text)
         if (
             (_looks_like_self_echo_transcript(text) or should_ignore_transcript(text))
             or _looks_like_recent_assistant_reply_echo(text)
             or _looks_like_recent_assistant_reprompt(text)
-            or (local_playback_guard_active() and not _looks_like_user_question(text))
+            or (local_playback_guard_active() and _should_ignore_user_backchannel(text))
         ):
             LOGGER.info("room transcript data ignored during local playback guard: text=%r", text)
             return
@@ -3864,11 +4094,15 @@ async def entrypoint(ctx: JobContext) -> None:
             LOGGER.info("room transcript data ignored in local_text backend: text=%r", text)
             return
 
-        async def _run_local_text_from_data() -> None:
+        async def _run_text_from_data() -> None:
+            if text_input_only:
+                handled = await _route_frontgate_text_input(session, text, language_hint)
+                LOGGER.info("room transcript data handled in frontgate text-only mode: handled=%s text=%r", handled, text)
+                return
             handled = await _try_handle_local_text_decision(session, text)
             LOGGER.info("room transcript data handled by local_text backend: handled=%s text=%r", handled, text)
 
-        asyncio.create_task(_run_local_text_from_data())
+        asyncio.create_task(_run_text_from_data())
 
     room_io = getattr(session, "_room_io", None)
     if room_io is not None:
@@ -3892,7 +4126,9 @@ async def entrypoint(ctx: JobContext) -> None:
             text = next((item for item in final_texts if item), "")
             if not text:
                 return
-            if local_playback_guard_active() or should_ignore_transcript(text):
+            if should_ignore_transcript(text) or (
+                local_playback_guard_active() and _should_ignore_user_backchannel(text)
+            ):
                 LOGGER.info(
                     "room transcription ignored during local playback guard: identity=%s text=%r",
                     identity,
@@ -3943,6 +4179,7 @@ async def on_request(req: JobRequest) -> None:
 
 
 _server_kwargs = {
+    "job_executor_type": _job_executor_type(),
     "ws_url": SETTINGS.livekit.url,
     "api_key": SETTINGS.livekit.api_key,
     "api_secret": SETTINGS.livekit.api_secret,

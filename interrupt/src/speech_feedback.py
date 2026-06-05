@@ -85,14 +85,13 @@ class SpeechFeedbackRouter:
         normalized = normalize_tts_text(text)
         if not normalized:
             return False
-        if language == "zh-YUE" and self._cantonese_tts.enabled:
-            try:
-                if self._cantonese_tts.synthesize_and_play(normalized):
-                    note_local_playback(normalized, language=language)
-                    LOGGER.info("强制本地回复播报成功: backend=edge_tts_yue text=%r", normalized)
-                    return True
-            except Exception as exc:
-                LOGGER.warning("强制本地粤语回复播报失败，回退默认链路: error=%s text=%r", exc, normalized)
+        if language == "zh-YUE":
+            return self._speak_cantonese_only(
+                normalized,
+                success_log="强制本地回复播报成功: backend=edge_tts_yue text=%r",
+                unavailable_log="强制本地粤语回复播报跳过: 专用粤语 TTS 未启用或不可用 text=%r",
+                failure_log="强制本地粤语回复播报失败: error=%s text=%r",
+            )
         if not self._adapter.available:
             LOGGER.warning("强制本地回复播报跳过: adapter unavailable text=%r", normalized)
             return False
@@ -124,18 +123,13 @@ class SpeechFeedbackRouter:
         normalized = normalize_tts_text(text)
         if not normalized:
             return False
-        if language == "zh-YUE" and self._cantonese_tts.enabled and mode == MODE_OM1_MIRROR:
-            try:
-                if self._cantonese_tts.synthesize_and_play(normalized):
-                    note_local_playback(normalized, language=language)
-                    LOGGER.info(
-                        "专用粤语 TTS 播报成功: mode=%s text=%r",
-                        mode,
-                        normalized,
-                    )
-                    return True
-            except Exception as exc:
-                LOGGER.warning("专用粤语 TTS 播报失败，回退默认链路: error=%s text=%r", exc, normalized)
+        if language == "zh-YUE" and mode == MODE_OM1_MIRROR:
+            return self._speak_cantonese_only(
+                normalized,
+                success_log=f"专用粤语 TTS 播报成功: mode={mode} text=%r",
+                unavailable_log="跳过粤语本地播报: 专用粤语 TTS 未启用或不可用 text=%r",
+                failure_log="专用粤语 TTS 播报失败: error=%s text=%r",
+            )
         if mode == MODE_DISABLED:
             LOGGER.info("%s: mode=disabled", skip_log_prefix)
             return False
@@ -166,3 +160,28 @@ class SpeechFeedbackRouter:
             normalized,
         )
         return False
+
+    def _speak_cantonese_only(
+        self,
+        text: str,
+        *,
+        success_log: str,
+        unavailable_log: str,
+        failure_log: str,
+    ) -> bool:
+        if not self._cantonese_tts.enabled:
+            LOGGER.warning(unavailable_log, text)
+            return False
+        if not self._cantonese_tts.is_available():
+            LOGGER.warning(unavailable_log, text)
+            return False
+        try:
+            if not self._cantonese_tts.synthesize_and_play(text):
+                LOGGER.warning(failure_log, "cantonese_tts returned false", text)
+                return False
+        except Exception as exc:
+            LOGGER.warning(failure_log, exc, text)
+            return False
+        note_local_playback(text, language="zh-YUE")
+        LOGGER.info(success_log, text)
+        return True

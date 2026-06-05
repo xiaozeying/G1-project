@@ -1,0 +1,117 @@
+services:
+  wakeword-frontgate:
+    build:
+      context: ${HOST_REPO_ROOT:-../..}
+      dockerfile: interrupt/deploy/compose/Dockerfile
+    image: hongtu/interrupt-runtime:latest
+    container_name: hongtu-wakeword-frontgate
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    privileged: true
+    working_dir: ${HOST_INTERRUPT_DIR}
+    env_file:
+      - ${HOST_INTERRUPT_ENV_FILE}
+    environment:
+      HOME: /home/unitree
+      XDG_RUNTIME_DIR: ${HOST_XDG_RUNTIME_DIR}
+      PULSE_SERVER: unix:${HOST_XDG_RUNTIME_DIR}/pulse/native
+      PYTHONUNBUFFERED: "1"
+      INTERRUPT_PYTHON_BIN: /opt/interrupt-venv/bin/python
+      INTERRUPT_FRONTGATE_PYTHON: ${HOST_WAKEWORD_ENV_DIR}/bin/python
+      INTERRUPT_G1_OM1_PYTHON: ${HOST_OM1_DIR}/.venv-g1/bin/python
+      INTERRUPT_G1_DIRECT_COMMAND_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_direct_command_fallback.py
+      INTERRUPT_G1_FEEDBACK_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_watchdog_feedback.py
+      WAKEWORD_SCRIPT: ${HOST_WAKEWORD_DIR}/wakeword_adaptive.py
+      INTERRUPT_FRONTGATE_SESSION_COMMAND: ${HOST_INTERRUPT_DIR}/scripts/frontgate_notify_online_bridge.sh
+      INTERRUPT_FRONTGATE_ONLINE_BRIDGE_URL: http://127.0.0.1:${HOST_FRONTGATE_ONLINE_BRIDGE_PORT:-8787}/wake-session
+      INTERRUPT_FRONTGATE_SKIP_LOCAL_TEXT_READY: "1"
+      INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_DIR: /tmp/interrupt-frontgate-shared
+      INTERRUPT_DIALOGUE_MODE: online
+      INTERRUPT_DIALOGUE_MODE_STABILITY: production_fixed
+    volumes:
+      - ${HOST_REPO_ROOT}:${HOST_REPO_ROOT}
+      - ${HOST_OM1_DIR}:${HOST_OM1_DIR}
+      - ${HOST_WAKEWORD_DIR}:${HOST_WAKEWORD_DIR}
+      - ${HOST_WAKEWORD_ENV_DIR}:${HOST_WAKEWORD_ENV_DIR}:ro
+      - ${HOST_XDG_RUNTIME_DIR}/pulse:${HOST_XDG_RUNTIME_DIR}/pulse
+      - ${HOST_PULSE_COOKIE}:${HOST_PULSE_COOKIE}:ro
+      - ${HOST_INTERRUPT_DIR}/volumes/frontgate_shared:/tmp/interrupt-frontgate-shared
+      - /dev/snd:/dev/snd
+      - /dev:/dev
+    command:
+      - bash
+      - -lc
+      - cd "${HOST_INTERRUPT_DIR}" && ./run_robot_frontgate_session.sh
+    depends_on:
+      online-brain:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  online-brain:
+    build:
+      context: ${HOST_REPO_ROOT:-../..}
+      dockerfile: interrupt/deploy/compose/Dockerfile
+    image: hongtu/interrupt-runtime:latest
+    container_name: hongtu-online-brain
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    privileged: true
+    working_dir: ${HOST_INTERRUPT_DIR}
+    env_file:
+      - ${HOST_INTERRUPT_ENV_FILE}
+    environment:
+      HOME: /home/unitree
+      XDG_RUNTIME_DIR: ${HOST_XDG_RUNTIME_DIR}
+      PULSE_SERVER: unix:${HOST_XDG_RUNTIME_DIR}/pulse/native
+      PYTHONUNBUFFERED: "1"
+      INTERRUPT_PYTHON_BIN: /opt/interrupt-venv/bin/python
+      INTERRUPT_G1_OM1_PYTHON: ${HOST_OM1_DIR}/.venv-g1/bin/python
+      INTERRUPT_G1_DIRECT_COMMAND_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_direct_command_fallback.py
+      INTERRUPT_G1_FEEDBACK_SCRIPT: ${HOST_OM1_DIR}/scripts/g1_watchdog_feedback.py
+      INTERRUPT_FRONTGATE_ONLINE_BRIDGE_BIND: 127.0.0.1
+      INTERRUPT_FRONTGATE_ONLINE_BRIDGE_PORT: ${HOST_FRONTGATE_ONLINE_BRIDGE_PORT:-8787}
+      INTERRUPT_FRONTGATE_ROOM_SESSION_COMMAND: ${HOST_INTERRUPT_DIR}/run_frontgate_room_session.sh
+      INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_DIR: /tmp/interrupt-frontgate-shared
+      INTERRUPT_AGENT_RUNTIME_MODE: online_full
+      INTERRUPT_AGENT_BACKEND: gemini_realtime
+      INTERRUPT_AGENT_LOCAL_TEXT_DECISION_MODE: disabled
+      INTERRUPT_ASSISTANT_AUDIO_MODE: transport_only
+      INTERRUPT_LOCAL_TOOL_ACK_AUDIO_MODE: transport_only
+      INTERRUPT_RTC_SUBSCRIBE_AUDIO: "1"
+      INTERRUPT_RTC_OUTPUT_DEVICE: pulse
+      INTERRUPT_RTC_AEC_ENABLED: "1"
+      INTERRUPT_RTC_TEXT_INPUT_ONLY: "1"
+      INTERRUPT_WAKE_WORD_FACTORY: src.om1_wakeword_gate:factory
+      INTERRUPT_DIALOGUE_MODE: online
+      INTERRUPT_DIALOGUE_MODE_STABILITY: production_fixed
+    volumes:
+      - ${HOST_REPO_ROOT}:${HOST_REPO_ROOT}
+      - ${HOST_OM1_DIR}:${HOST_OM1_DIR}
+      - ${HOST_XDG_RUNTIME_DIR}/pulse:${HOST_XDG_RUNTIME_DIR}/pulse
+      - ${HOST_PULSE_COOKIE}:${HOST_PULSE_COOKIE}:ro
+      - ${HOST_INTERRUPT_DIR}/volumes/frontgate_shared:/tmp/interrupt-frontgate-shared
+      - /dev/snd:/dev/snd
+      - /dev:/dev
+    devices:
+      - ${HOST_CAMERA_DEVICE}:${HOST_CAMERA_DEVICE}
+    command:
+      - bash
+      - -lc
+      - cd "${HOST_INTERRUPT_DIR}" && ./run_frontgate_online_bridge.sh
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:${HOST_FRONTGATE_ONLINE_BRIDGE_PORT:-8787}/healthz >/dev/null || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"

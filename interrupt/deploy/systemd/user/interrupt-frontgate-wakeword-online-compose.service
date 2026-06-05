@@ -1,0 +1,15 @@
+[Unit]
+Description=Interrupt Wakeword + Online Brain Compose
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/data/HongTu/interrupt
+ExecStart=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.robot.wakeword-online -f /data/HongTu/interrupt/deploy/compose/docker-compose.robot.wakeword-online.yaml up -d --build online-brain wakeword-frontgate
+ExecStop=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.robot.wakeword-online -f /data/HongTu/interrupt/deploy/compose/docker-compose.robot.wakeword-online.yaml stop wakeword-frontgate online-brain
+TimeoutStartSec=0
+
+[Install]
+WantedBy=default.target

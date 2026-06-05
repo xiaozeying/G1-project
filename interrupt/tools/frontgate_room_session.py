@@ -30,6 +30,58 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _frontgate_session_language_hint() -> str:
+    raw = os.getenv("INTERRUPT_WAKE_EVENT_LANGUAGE", "").strip().lower()
+    if raw in {"zh-yue", "yue", "cantonese"}:
+        return "yue"
+    if raw in {"en", "en-us", "en-gb", "english"}:
+        return "en"
+    if raw in {"zh-cn", "zh", "mandarin", "chinese"}:
+        return "zh"
+    return ""
+
+
+def _room_ready_reply_text() -> str:
+    session_language = _frontgate_session_language_hint()
+    if session_language == "yue":
+        return (
+            os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_YUE", "請問您有咩需求呢").strip()
+            or "請問您有咩需求呢"
+        )
+    if session_language == "en":
+        return (
+            os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_EN", "How can I help you?").strip()
+            or "How can I help you?"
+        )
+    return (
+        os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_ZH", "请问您有什么需求呢").strip()
+        or "请问您有什么需求呢"
+    )
+
+
+def _intro_done_signal_path() -> Path | None:
+    raw = os.getenv("INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_FILE", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _intro_playback_completed(path: Path | None) -> bool:
+    if path is None:
+        return True
+    return path.exists()
+
+
+try:
+    from src.cantonese_tts import EdgeCantoneseTts, load_cantonese_tts_config
+except Exception as exc:
+    _CANTONESE_TTS = None
+    _CANTONESE_TTS_IMPORT_ERROR = exc
+else:
+    _CANTONESE_TTS = EdgeCantoneseTts(load_cantonese_tts_config())
+    _CANTONESE_TTS_IMPORT_ERROR = None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Ensure the robot LiveKit room session is available for frontgate wake flows.",
@@ -178,11 +230,17 @@ def _ensure_process_running(name: str, pattern: str, command: str) -> subprocess
     env = os.environ.copy()
     usb_source = env.get(
         "INTERRUPT_FRONTGATE_FORCE_PULSE_SOURCE",
-        "alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+        env.get(
+            "PULSE_SOURCE",
+            "alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+        ),
     ).strip()
     usb_sink = env.get(
         "INTERRUPT_FRONTGATE_FORCE_PULSE_SINK",
-        "alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+        env.get(
+            "PULSE_SINK",
+            "alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo",
+        ),
     ).strip()
     usb_input_device = env.get(
         "INTERRUPT_FRONTGATE_FORCE_RTC_INPUT_DEVICE",
@@ -193,14 +251,21 @@ def _ensure_process_running(name: str, pattern: str, command: str) -> subprocess
         env["PULSE_SINK"] = usb_sink
         env["INTERRUPT_RTC_INPUT_DEVICE"] = usb_input_device
         env["INTERRUPT_RTC_OUTPUT_DEVICE"] = env.get("INTERRUPT_RTC_OUTPUT_DEVICE", "pulse").strip() or "pulse"
+        env["INTERRUPT_RTC_TEXT_INPUT_ONLY"] = (
+            env.get("INTERRUPT_RTC_TEXT_INPUT_ONLY", "1").strip() or "1"
+        )
+        if not env.get("INTERRUPT_RTC_TRANSCRIBE_LANGUAGE", "").strip():
+            env["INTERRUPT_RTC_TRANSCRIBE_LANGUAGE"] = "auto"
         rtc_script = str(ROOT_DIR / "run_robot_rtc_endpoint.sh")
         argv = [rtc_script]
         print(
             "[FrontGateRoom] starting rtc-endpoint: "
             f"env INTERRUPT_RTC_INPUT_DEVICE={env['INTERRUPT_RTC_INPUT_DEVICE']} "
             f"INTERRUPT_RTC_OUTPUT_DEVICE={env['INTERRUPT_RTC_OUTPUT_DEVICE']} "
+            f"INTERRUPT_RTC_TEXT_INPUT_ONLY={env['INTERRUPT_RTC_TEXT_INPUT_ONLY']} "
             f"PULSE_SOURCE={env['PULSE_SOURCE']} "
             f"PULSE_SINK={env['PULSE_SINK']} "
+            f"INTERRUPT_RTC_TRANSCRIBE_LANGUAGE={env.get('INTERRUPT_RTC_TRANSCRIBE_LANGUAGE', '').strip() or 'auto'} "
             f"{rtc_script}",
             flush=True,
         )
@@ -352,16 +417,36 @@ def _agent_identity(identity: str, agent_name: str) -> bool:
 
 
 def _speak_room_ready(adapter: G1Om1Adapter) -> None:
-    if not adapter.available:
-        print("[FrontGateRoom] room_ready_ack skipped: G1/OM1 adapter unavailable", flush=True)
-        return
     if not _env_flag("INTERRUPT_FRONTGATE_ENABLE_ROOM_READY_ACK", True):
         return
 
-    reply = (
-        os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
-        or "现在可以了"
-    )
+    reply = _room_ready_reply_text()
+    session_language = _frontgate_session_language_hint()
+    if session_language == "yue":
+        speak_ok = False
+        speak_stderr = ""
+        try:
+            if _CANTONESE_TTS is not None and _CANTONESE_TTS.enabled and _CANTONESE_TTS.is_available():
+                speak_ok = bool(_CANTONESE_TTS.synthesize_and_play(reply))
+                if not speak_ok:
+                    speak_stderr = "cantonese_tts returned false"
+            elif _CANTONESE_TTS_IMPORT_ERROR is not None:
+                speak_stderr = f"cantonese_tts unavailable: {_CANTONESE_TTS_IMPORT_ERROR}"
+            else:
+                speak_stderr = "cantonese_tts disabled or unavailable"
+        except Exception as exc:
+            speak_stderr = str(exc)
+        if speak_ok:
+            note_local_playback(reply, language="zh-YUE")
+        print(
+            "[FrontGateRoom] room_ready_ack "
+            f"reply={reply} language=zh-YUE ok={speak_ok} stdout={''!r} stderr={speak_stderr!r}",
+            flush=True,
+        )
+        return
+    if not adapter.available:
+        print("[FrontGateRoom] room_ready_ack skipped: G1/OM1 adapter unavailable", flush=True)
+        return
     note_local_playback(reply, duration_s=1.2)
     speak_result = adapter.speak(reply)
     print(
@@ -468,10 +553,9 @@ async def _run(args: argparse.Namespace) -> int:
         max_duration_s = max(0.0, args.max_duration)
         room_agent_log = ROOT_DIR / "logs" / "room-agent.log"
         room_agent_listening_marker = "agent_state_changed: initializing -> listening"
-        room_ready_reply = (
-            os.getenv("INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT", "现在可以了").strip()
-            or "现在可以了"
-        )
+        room_ready_reply = _room_ready_reply_text()
+        intro_done_signal_path = _intro_done_signal_path()
+        ready_prompt_sent = False
 
         while True:
             if signal_path.exists():
@@ -515,12 +599,15 @@ async def _run(args: argparse.Namespace) -> int:
                 managed_processes_ready and robots and room_agent_listening
             )
             if session_ready:
-                if not saw_session_ready:
+                saw_session_ready = True
+                last_session_ready_at = now
+                if not ready_prompt_sent and _intro_playback_completed(intro_done_signal_path):
+                    session_language = _frontgate_session_language_hint()
                     ack_mode = os.getenv(
                         "INTERRUPT_FRONTGATE_ROOM_READY_ACK_MODE",
                         "room_agent_rtc",
                     ).strip().lower() or "room_agent_rtc"
-                    if ack_mode == "room_agent_rtc":
+                    if ack_mode == "room_agent_rtc" and session_language != "yue":
                         queued = False
                         try:
                             queued = await _queue_room_ready_via_rtc(settings, room_ready_reply)
@@ -540,14 +627,13 @@ async def _run(args: argparse.Namespace) -> int:
                             _speak_room_ready(adapter)
                     else:
                         _speak_room_ready(adapter)
+                    ready_prompt_sent = True
                     print(
                         "[FrontGateRoom] room session active "
                         f"room={settings.rtc_endpoint.room_name} agents={agents} robots={robots} "
-                        f"room_agent_listening={room_agent_listening}",
+                        f"room_agent_listening={room_agent_listening} intro_done={_intro_playback_completed(intro_done_signal_path)}",
                         flush=True,
                     )
-                saw_session_ready = True
-                last_session_ready_at = now
             elif not saw_session_ready and now - started_at >= max(1.0, args.startup_timeout):
                 print(
                     "[FrontGateRoom] room session startup timeout "

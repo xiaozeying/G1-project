@@ -73,11 +73,15 @@ def _pick_linux_capture_device(
     explicit_hints: Sequence[str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     requested = (requested_device or "").strip()
+    if requested.casefold() == "pulse":
+        return requested, [], _effective_capture_hints(explicit_hints)
     if requested and requested.casefold() not in {"default", "pulse"}:
         return requested_device, [], _effective_capture_hints(explicit_hints)
 
     for env_name in ("OM1_CAPTURE_DEVICE", "AUDIO_CAPTURE_DEVICE"):
         env_device = os.environ.get(env_name, "").strip()
+        if env_device.casefold() == "pulse":
+            return env_device, [], _effective_capture_hints(explicit_hints)
         if env_device and env_device.casefold() not in {"default", "pulse"}:
             return env_device, [], _effective_capture_hints(explicit_hints)
 

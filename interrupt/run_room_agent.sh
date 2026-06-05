@@ -116,22 +116,30 @@ PY
 )"
 fi
 
-unset WSS_PROXY WS_PROXY wss_proxy ws_proxy
+if [[ -z "${INTERRUPT_GEMINI_PROXY:-}" ]]; then
+  for candidate in "${WSS_PROXY:-}" "${HTTPS_PROXY:-}" "${HTTP_PROXY:-}"; do
+    if [[ -n "${candidate}" ]]; then
+      export INTERRUPT_GEMINI_PROXY="${candidate}"
+      break
+    fi
+  done
+fi
 
 if [[ "${LIVEKIT_HOST}" == "localhost" || "${LIVEKIT_HOST}" == "127.0.0.1" || "${LIVEKIT_HOST}" =~ ^10\. || "${LIVEKIT_HOST}" =~ ^192\.168\. || "${LIVEKIT_HOST}" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]; then
-  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY
-  unset http_proxy https_proxy all_proxy
+  unset INTERRUPT_LIVEKIT_PROXY
+else
+  if [[ -z "${INTERRUPT_LIVEKIT_PROXY:-}" ]]; then
+    for candidate in "${HTTPS_PROXY:-}" "${HTTP_PROXY:-}" "${ALL_PROXY:-}"; do
+      if [[ -n "${candidate}" ]]; then
+        export INTERRUPT_LIVEKIT_PROXY="${candidate}"
+        break
+      fi
+    done
+  fi
 fi
 
-if [[ -n "${HTTP_PROXY:-}" && -z "${http_proxy:-}" ]]; then
-  export http_proxy="${HTTP_PROXY}"
-fi
-if [[ -n "${HTTPS_PROXY:-}" && -z "${https_proxy:-}" ]]; then
-  export https_proxy="${HTTPS_PROXY}"
-fi
-if [[ -n "${ALL_PROXY:-}" && -z "${all_proxy:-}" ]]; then
-  export all_proxy="${ALL_PROXY}"
-fi
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY WSS_PROXY WS_PROXY
+unset http_proxy https_proxy all_proxy wss_proxy ws_proxy
 
 LOCAL_NO_PROXY="127.0.0.1,localhost,::1"
 if [[ -n "${LIVEKIT_HOST}" ]]; then
@@ -153,7 +161,8 @@ export INTERRUPT_AGENT_FORCE_LOAD="${INTERRUPT_AGENT_FORCE_LOAD:-0.20}"
 export INTERRUPT_AGENT_PATCH_JOB_TOKEN="${INTERRUPT_AGENT_PATCH_JOB_TOKEN:-0}"
 
 echo "livekit url: ${LIVEKIT_URL:-unset}"
-echo "wss proxy: unset"
+echo "livekit proxy: ${INTERRUPT_LIVEKIT_PROXY:-unset}"
+echo "gemini realtime proxy: ${INTERRUPT_GEMINI_PROXY:-unset}"
 echo "livekit proxy bypass host: ${LIVEKIT_HOST:-unset}"
 echo "agent backend: ${INTERRUPT_AGENT_BACKEND:-gemini_realtime}"
 echo "agent runtime mode: ${INTERRUPT_AGENT_RUNTIME_MODE:-online_full}"

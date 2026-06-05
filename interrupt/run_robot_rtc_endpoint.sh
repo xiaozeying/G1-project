@@ -14,6 +14,15 @@ interrupt_activate_python_env "${ROOT_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 echo "===== $(date '+%F %T') run_robot_rtc_endpoint.sh ====="
 
+have_arecord_card() {
+  local card_id="$1"
+  arecord -l 2>/dev/null | grep -F " ${card_id} [" >/dev/null 2>&1
+}
+
+first_usb_alsa_capture_device() {
+  arecord -l 2>/dev/null | sed -n 's/^card [0-9]\+: \([^ ]\+\) \[.*device \([0-9]\+\): USB Audio .*/plughw:CARD=\1,DEV=\2/p' | head -n1
+}
+
 load_env_defaults() {
   local env_file="$1"
   [[ -f "${env_file}" ]] || return 0
@@ -81,9 +90,16 @@ echo "resolved VLM provider: ${INTERRUPT_VLM_PROVIDER:-unset}"
 echo "resolved VLM base_url: ${INTERRUPT_VLM_BASE_URL:-unset}"
 echo "resolved VLM model: ${INTERRUPT_VLM_MODEL:-unset}"
 export INTERRUPT_RTC_INPUT_DEVICE="${INTERRUPT_RTC_INPUT_DEVICE:-plughw:CARD=audio,DEV=0}"
+USB_ALSA_CAPTURE_DEVICE="$(first_usb_alsa_capture_device || true)"
+if [[ "${INTERRUPT_RTC_INPUT_DEVICE}" == "plughw:CARD=audio,DEV=0" ]] && [[ -n "${USB_ALSA_CAPTURE_DEVICE}" ]]; then
+  export INTERRUPT_RTC_INPUT_DEVICE="${USB_ALSA_CAPTURE_DEVICE}"
+elif [[ "${INTERRUPT_RTC_INPUT_DEVICE}" == "plughw:CARD=audio,DEV=0" ]] && ! have_arecord_card "audio" && have_arecord_card "APE"; then
+  export INTERRUPT_RTC_INPUT_DEVICE="plughw:CARD=APE,DEV=0"
+fi
 
 echo "rtc input device: ${INTERRUPT_RTC_INPUT_DEVICE}"
 echo "rtc output device: ${INTERRUPT_RTC_OUTPUT_DEVICE:-default}"
 echo "rtc proxy disabled for host: ${LIVEKIT_HOST:-unset}"
 
+cd "${ROOT_DIR}"
 exec "${PYTHON_BIN}" -m src.rtc_endpoint "$@"

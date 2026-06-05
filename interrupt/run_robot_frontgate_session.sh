@@ -59,6 +59,10 @@ have_arecord_card() {
   arecord -l 2>/dev/null | grep -F " ${card_id} [" >/dev/null 2>&1
 }
 
+first_usb_alsa_capture_device() {
+  arecord -l 2>/dev/null | sed -n 's/^card [0-9]\+: \([^ ]\+\) \[.*device \([0-9]\+\): USB Audio .*/plughw:CARD=\1,DEV=\2/p' | head -n1
+}
+
 first_pulse_source_matching() {
   local pattern match
   for pattern in "$@"; do
@@ -73,16 +77,16 @@ first_pulse_source_matching() {
 
 is_usb_pulse_source() {
   local value="${1:-}"
-  [[ -n "${value}" && "${value}" == *"usb"* && "${value}" == *"mvsilicon"* ]]
+  [[ -n "${value}" && "${value}" == *"usb"* ]]
 }
 
 is_usb_pulse_sink() {
   local value="${1:-}"
-  [[ -n "${value}" && "${value}" == *"usb"* && "${value}" == *"mvsilicon"* ]]
+  [[ -n "${value}" && "${value}" == *"usb"* ]]
 }
 
 have_usb_alsa_capture() {
-  arecord -l 2>/dev/null | grep -F "card 0: audio" >/dev/null 2>&1
+  [[ -n "$(first_usb_alsa_capture_device || true)" ]]
 }
 
 first_pulse_sink_matching() {
@@ -220,6 +224,24 @@ export INTERRUPT_FRONTGATE_ROOM_MAX_DURATION_S="${INTERRUPT_FRONTGATE_ROOM_MAX_D
 export INTERRUPT_FRONTGATE_ROOM_STARTUP_TIMEOUT_S="${INTERRUPT_FRONTGATE_ROOM_STARTUP_TIMEOUT_S:-60}"
 export INTERRUPT_FRONTGATE_ROOM_PRE_DISPATCH_DELAY_S="${INTERRUPT_FRONTGATE_ROOM_PRE_DISPATCH_DELAY_S:-2}"
 export INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS="${INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS:-180000}"
+export INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK="${INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK:-1}"
+export INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO="${INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO:-1}"
+export INTERRUPT_FRONTGATE_ENABLE_ROOM_READY_ACK="${INTERRUPT_FRONTGATE_ENABLE_ROOM_READY_ACK:-1}"
+export INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_ZH="${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_ZH:-请问您有什么需求呢}"
+export INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_YUE="${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_YUE:-請問您有咩需求呢}"
+export INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_EN="${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_EN:-How can I help you?}"
+export INTERRUPT_FRONTGATE_WATCHDOG_ENABLED="${INTERRUPT_FRONTGATE_WATCHDOG_ENABLED:-1}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_ZH="${INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_ZH:-你好，机器人|你好机器人|你好，機器人|你好機器人|机器人，你好|机器人你好|機器人，你好|機器人你好}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_YUE="${INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_YUE:-你好，機器人|你好機器人|你好，机器人|你好机器人|機器人，你好|機器人你好|机器人，你好|机器人你好}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_EN="${INTERRUPT_FRONTGATE_WATCHDOG_PREFIX_EN:-Hello, Robot|Hello Robot|Hi, Robot|Hi Robot|Hey, Robot|Hey Robot|Oh, Robot|Oh Robot}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_ZH="${INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_ZH:-你好}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_YUE="${INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_YUE:-你好}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_EN="${INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_EN:-Hello|Hi|Hey|Oh}"
+export INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_ZH="${INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_ZH:-机器人|機器人}"
+export INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_YUE="${INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_YUE:-機器人|机器人}"
+export INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_EN="${INTERRUPT_FRONTGATE_WATCHDOG_ROBOT_TERM_EN:-Robot}"
+export INTERRUPT_FRONTGATE_WATCHDOG_FOLLOWUP_WINDOW_S="${INTERRUPT_FRONTGATE_WATCHDOG_FOLLOWUP_WINDOW_S:-6}"
+export INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_WINDOW_S="${INTERRUPT_FRONTGATE_WATCHDOG_PENDING_PREFIX_WINDOW_S:-3.5}"
 export INTERRUPT_FRONTGATE_MIN_INTERRUPTION_DURATION_MS="${INTERRUPT_FRONTGATE_MIN_INTERRUPTION_DURATION_MS:-80}"
 export INTERRUPT_FRONTGATE_FALSE_INTERRUPTION_TIMEOUT_MS="${INTERRUPT_FRONTGATE_FALSE_INTERRUPTION_TIMEOUT_MS:-500}"
 export INTERRUPT_FRONTGATE_REALTIME_START_SENSITIVITY="${INTERRUPT_FRONTGATE_REALTIME_START_SENSITIVITY:-HIGH}"
@@ -228,18 +250,53 @@ export INTERRUPT_FRONTGATE_MIN_ENDPOINTING_DELAY_MS="${INTERRUPT_FRONTGATE_MIN_E
 export INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS="${INTERRUPT_FRONTGATE_MAX_ENDPOINTING_DELAY_MS:-600}"
 export INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS="${INTERRUPT_FRONTGATE_REALTIME_PREFIX_PADDING_MS:-200}"
 if [[ -z "${PULSE_SOURCE:-}" || "${PULSE_SOURCE:-}" == *"platform-sound"* || "${PULSE_SOURCE:-}" == *".monitor"* ]]; then
-  export PULSE_SOURCE="alsa_input.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo"
+  export PULSE_SOURCE="$(
+    first_pulse_source_matching \
+      "alsa_input.usb-" \
+      "usb-MV-SILICON" \
+      "mvsilicon" \
+      "platform-sound" \
+      "alsa_input.platform-sound" \
+      "alsa_input" || true
+  )"
 fi
 if [[ -z "${PULSE_SINK:-}" || "${PULSE_SINK:-}" == *"platform-sound"* || "${PULSE_SINK:-}" == *".monitor"* ]]; then
-  export PULSE_SINK="alsa_output.usb-MV-SILICON_mvsilicon_B1_usb_audio_20190808-00.analog-stereo"
+  export PULSE_SINK="$(
+    first_pulse_sink_matching \
+      "alsa_output.usb-" \
+      "usb-MV-SILICON" \
+      "mvsilicon" \
+      "platform-sound" \
+      "alsa_output.platform-sound" \
+      "alsa_output" || true
+  )"
 fi
 export PULSE_SINK_VOLUME_PERCENT="${PULSE_SINK_VOLUME_PERCENT:-100%}"
-export OM1_CONSOLE_INPUT_DEVICE="${OM1_CONSOLE_INPUT_DEVICE:-mvsilicon B1 usb audio}"
+export OM1_CONSOLE_INPUT_DEVICE="${OM1_CONSOLE_INPUT_DEVICE:-USB Audio}"
 export OM1_CONSOLE_OUTPUT_DEVICE="${OM1_CONSOLE_OUTPUT_DEVICE:-pulse}"
 export INTERRUPT_RTC_INPUT_DEVICE="${INTERRUPT_RTC_INPUT_DEVICE:-plughw:CARD=audio,DEV=0}"
 export INTERRUPT_RTC_OUTPUT_DEVICE="${INTERRUPT_RTC_OUTPUT_DEVICE:-pulse}"
+export INTERRUPT_G1_NAV_ACTION_SERVER="${INTERRUPT_G1_NAV_ACTION_SERVER:-/navigate_to_pose}"
+export INTERRUPT_G1_NAV_GOAL_TOPIC="${INTERRUPT_G1_NAV_GOAL_TOPIC:-/goal_pose}"
 
-if ! have_arecord_card "audio" && have_arecord_card "APE"; then
+USB_ALSA_CAPTURE_DEVICE="$(first_usb_alsa_capture_device || true)"
+if [[ -n "${USB_ALSA_CAPTURE_DEVICE}" ]]; then
+  if [[ -z "${INTERRUPT_RTC_INPUT_DEVICE}" || "${INTERRUPT_RTC_INPUT_DEVICE}" == "plughw:CARD=audio,DEV=0" ]]; then
+    export INTERRUPT_RTC_INPUT_DEVICE="${USB_ALSA_CAPTURE_DEVICE}"
+  fi
+  if [[ "${OM1_CAPTURE_DEVICE:-default}" == "default" || "${OM1_CAPTURE_DEVICE:-}" == "pulse" || -z "${OM1_CAPTURE_DEVICE:-}" || "${OM1_CAPTURE_DEVICE:-}" == *"CARD=audio"* || "${OM1_CAPTURE_DEVICE:-}" == *"CARD=APE"* ]]; then
+    export OM1_CAPTURE_DEVICE="${USB_ALSA_CAPTURE_DEVICE}"
+  fi
+  if [[ -z "${OM1_CAPTURE_HINTS:-}" || "${OM1_CAPTURE_HINTS:-}" == *"BY Y02"* || "${OM1_CAPTURE_HINTS:-}" == *"BYY02"* || "${OM1_CAPTURE_HINTS:-}" == *"usb-BY_BY_Y02"* || "${OM1_CAPTURE_HINTS:-}" == *"APE"* || "${OM1_CAPTURE_HINTS:-}" == *"platform-sound"* ]]; then
+    export OM1_CAPTURE_HINTS="8888:1719,MV-SILICON,mvsilicon B1 usb audio,USB Audio,usb"
+  fi
+  if [[ -z "${OM1_CONSOLE_INPUT_DEVICE:-}" || "${OM1_CONSOLE_INPUT_DEVICE:-}" == "default" || "${OM1_CONSOLE_INPUT_DEVICE:-}" == *"BY Y02"* || "${OM1_CONSOLE_INPUT_DEVICE:-}" == *"USB Audio"* ]]; then
+    export OM1_CONSOLE_INPUT_DEVICE="mvsilicon B1 usb audio"
+  fi
+  if [[ -z "${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING:-}" || "${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING:-}" == *"BY Y02"* || "${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING:-}" == *"usb-BY_BY_Y02"* || "${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING:-}" == *"platform-sound"* ]]; then
+    export INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING="mvsilicon B1 usb audio"
+  fi
+elif ! have_arecord_card "audio" && have_arecord_card "APE"; then
   export INTERRUPT_RTC_INPUT_DEVICE="${INTERRUPT_RTC_INPUT_DEVICE/plughw:CARD=audio,DEV=0/plughw:CARD=APE,DEV=0}"
   if [[ "${OM1_CAPTURE_DEVICE:-default}" == "default" || "${OM1_CAPTURE_DEVICE:-}" == "pulse" || -z "${OM1_CAPTURE_DEVICE:-}" || "${OM1_CAPTURE_DEVICE:-}" == *"CARD=audio"* ]]; then
     export OM1_CAPTURE_DEVICE="plughw:CARD=APE,DEV=0"
@@ -265,7 +322,7 @@ if [[ "${INTERRUPT_RTC_OUTPUT_DEVICE}" == "pulse" || "${INTERRUPT_RTC_OUTPUT_DEV
   export INTERRUPT_RTC_OUTPUT_DEVICE="${OM1_CONSOLE_OUTPUT_DEVICE}"
 fi
 export INTERRUPT_FRONTGATE_PYTHON="${INTERRUPT_FRONTGATE_PYTHON:-${INTERRUPT_G1_OM1_PYTHON}}"
-export OM1_CAPTURE_HINTS="${OM1_CAPTURE_HINTS:-mvsilicon B1 usb audio,USB Audio,MV-SILICON}"
+export OM1_CAPTURE_HINTS="${OM1_CAPTURE_HINTS:-8888:1719,MV-SILICON,mvsilicon B1 usb audio,USB Audio,usb}"
 export OM1_CAPTURE_DEVICE="${OM1_CAPTURE_DEVICE:-default}"
 export OM1_WAKEWORD_CHUNK_DURATION="${OM1_WAKEWORD_CHUNK_DURATION:-1.6}"
 export OM1_WAKEWORD_MERGE_HISTORY_CHUNKS="${OM1_WAKEWORD_MERGE_HISTORY_CHUNKS:-3}"
@@ -280,6 +337,9 @@ export OM1_IDLE_SPEECH_RATIO="${OM1_IDLE_SPEECH_RATIO:-1.45}"
 export OM1_IDLE_RELEASE_CHUNKS="${OM1_IDLE_RELEASE_CHUNKS:-2}"
 export INTERRUPT_INPUT_DEVICE="${INTERRUPT_INPUT_DEVICE:-${OM1_CONSOLE_INPUT_DEVICE}}"
 export INTERRUPT_OUTPUT_DEVICE="${INTERRUPT_OUTPUT_DEVICE:-${OM1_CONSOLE_OUTPUT_DEVICE:-0}}"
+export INTERRUPT_RTC_TEXT_INPUT_ONLY="${INTERRUPT_RTC_TEXT_INPUT_ONLY:-1}"
+export INTERRUPT_RTC_TRANSCRIBE_SILENCE_S="${INTERRUPT_RTC_TRANSCRIBE_SILENCE_S:-1.1}"
+export INTERRUPT_RTC_TRANSCRIBE_MIN_AUDIO_S="${INTERRUPT_RTC_TRANSCRIBE_MIN_AUDIO_S:-0.6}"
 export INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING="${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_SUBSTRING:-mvsilicon B1 usb audio}"
 export INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_TIMEOUT="${INTERRUPT_FRONTGATE_WAIT_FOR_INPUT_DEVICE_TIMEOUT:-3.0}"
 export INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S="${INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S:-12.0}"
@@ -287,6 +347,11 @@ export INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S="${INTERRUPT_FRONTGATE_PULSE_WAI
 if command -v pactl >/dev/null 2>&1; then
   if have_usb_alsa_capture; then
     echo "robot usb alsa capture ready: ${INTERRUPT_RTC_INPUT_DEVICE}"
+  elif [[ "${PULSE_SOURCE}" == *"usb"* || "${PULSE_SOURCE}" == *"mvsilicon"* ]]; then
+    FALLBACK_PULSE_SOURCE="$(first_pulse_source_matching "platform-sound" "alsa_input.platform-sound" "alsa_input" || true)"
+    if [[ -n "${FALLBACK_PULSE_SOURCE}" ]]; then
+      export PULSE_SOURCE="${FALLBACK_PULSE_SOURCE}"
+    fi
   elif [[ -n "${PULSE_SOURCE}" ]]; then
     if wait_for_pulse_endpoint "source" "${PULSE_SOURCE}" "${INTERRUPT_FRONTGATE_PULSE_WAIT_TIMEOUT_S}"; then
       echo "robot pulse source ready: ${PULSE_SOURCE}"
@@ -308,7 +373,7 @@ if command -v pactl >/dev/null 2>&1; then
     fi
   fi
   if ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SINK}" >/dev/null 2>&1; then
-    FALLBACK_PULSE_SINK="$(first_pulse_sink_matching "usb" "mvsilicon" "alsa_output.usb" || true)"
+    FALLBACK_PULSE_SINK="$(first_pulse_sink_matching "usb" "mvsilicon" "alsa_output.usb" "platform-sound" "alsa_output.platform-sound" "alsa_output" || true)"
     if [[ -n "${FALLBACK_PULSE_SINK}" ]]; then
       export PULSE_SINK="${FALLBACK_PULSE_SINK}"
     fi
@@ -323,7 +388,14 @@ if command -v pactl >/dev/null 2>&1; then
   fi
   if have_usb_alsa_capture; then
     echo "robot usb alsa capture present: ${INTERRUPT_RTC_INPUT_DEVICE}"
-    echo "robot pulse source kept as: ${CURRENT_PULSE_SOURCE:-unset}"
+    if [[ -n "${PULSE_SOURCE}" ]] && pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SOURCE}" >/dev/null 2>&1; then
+      if [[ "${CURRENT_PULSE_SOURCE}" != "${PULSE_SOURCE}" ]]; then
+        pactl set-default-source "${PULSE_SOURCE}" || true
+      fi
+      echo "robot pulse default source: ${CURRENT_PULSE_SOURCE:-unset} -> ${PULSE_SOURCE}"
+    else
+      echo "robot pulse source kept as: ${CURRENT_PULSE_SOURCE:-unset}"
+    fi
   elif pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fx "${PULSE_SOURCE}" >/dev/null 2>&1; then
     if [[ "${CURRENT_PULSE_SOURCE}" != "${PULSE_SOURCE}" ]]; then
       pactl set-default-source "${PULSE_SOURCE}" || true
@@ -364,9 +436,10 @@ printf -v INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND_DEFAULT \
 export INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND="${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND:-${INTERRUPT_FRONTGATE_ROOM_AGENT_COMMAND_DEFAULT}}"
 
 printf -v INTERRUPT_FRONTGATE_RTC_ENDPOINT_COMMAND_DEFAULT \
-  "env INTERRUPT_RTC_INPUT_DEVICE=%q INTERRUPT_RTC_OUTPUT_DEVICE=%q PULSE_SOURCE=%q PULSE_SINK=%q %q" \
+  "env INTERRUPT_RTC_INPUT_DEVICE=%q INTERRUPT_RTC_OUTPUT_DEVICE=%q INTERRUPT_RTC_TEXT_INPUT_ONLY=%q PULSE_SOURCE=%q PULSE_SINK=%q %q" \
   "${INTERRUPT_RTC_INPUT_DEVICE}" \
   "${INTERRUPT_RTC_OUTPUT_DEVICE}" \
+  "${INTERRUPT_RTC_TEXT_INPUT_ONLY}" \
   "${PULSE_SOURCE}" \
   "${PULSE_SINK}" \
   "${ROOT_DIR}/run_robot_rtc_endpoint.sh"
@@ -390,6 +463,12 @@ echo "robot session timeout: ${INTERRUPT_FRONTGATE_SESSION_TIMEOUT}"
 echo "robot room max duration: ${INTERRUPT_FRONTGATE_ROOM_MAX_DURATION_S}"
 echo "robot room startup timeout: ${INTERRUPT_FRONTGATE_ROOM_STARTUP_TIMEOUT_S}"
 echo "robot room pre-dispatch delay: ${INTERRUPT_FRONTGATE_ROOM_PRE_DISPATCH_DELAY_S}"
+echo "robot wake intro enabled: ${INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO}"
+echo "robot room ready ack zh: ${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_ZH}"
+echo "robot room ready ack yue: ${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_YUE}"
+echo "robot room ready ack en: ${INTERRUPT_FRONTGATE_ROOM_READY_ACK_TEXT_EN}"
+echo "robot frontgate watchdog enabled: ${INTERRUPT_FRONTGATE_WATCHDOG_ENABLED}"
+echo "robot rtc text input only: ${INTERRUPT_RTC_TEXT_INPUT_ONLY}"
 echo "robot frontgate user-away timeout: ${INTERRUPT_FRONTGATE_USER_AWAY_TIMEOUT_MS}"
 echo "robot frontgate min interruption ms: ${INTERRUPT_FRONTGATE_MIN_INTERRUPTION_DURATION_MS}"
 echo "robot frontgate false interruption timeout ms: ${INTERRUPT_FRONTGATE_FALSE_INTERRUPTION_TIMEOUT_MS}"
@@ -413,7 +492,9 @@ if ! run_audio_startup_preflight; then
   retry_audio_startup_preflight_once || true
 fi
 
-if ! interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log"; then
+if [[ "${INTERRUPT_FRONTGATE_SKIP_LOCAL_TEXT_READY:-0}" == "1" ]]; then
+  echo "robot frontgate local text readiness check: skipped by INTERRUPT_FRONTGATE_SKIP_LOCAL_TEXT_READY=1"
+elif ! interrupt_ensure_local_text_backend_ready "${ROOT_DIR}" "${LOG_DIR}/local-text-backend.log"; then
   echo "local text backend required but not ready; frontgate session will not start" >&2
   exit 1
 fi

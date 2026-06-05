@@ -1,18 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
+import uuid
+import wave
+from pathlib import Path
 
 import numpy as np
 from livekit import rtc
 
 from src.console_audio_compat import _resample_i16
+from src.frontgate_watchdog import (
+    detect_pending_prefix_fragment,
+    evaluate_frontgate_text,
+    followup_window_s,
+    frontgate_watchdog_enabled,
+    normalize_watchdog_language,
+    pending_prefix_window_s,
+    text_starts_with_robot_term,
+)
 from src.livekit_room import build_room_token, ensure_room_ready
 from src.settings import RtcEndpointConfig, load_settings
+from src.speech_loop_guard import local_playback_guard_active, should_ignore_transcript
 from src.tts_mute_state import should_mute_remote_audio
 
 
@@ -27,6 +42,10 @@ PLAYBACK_REBUFFER_MS = int(os.getenv("INTERRUPT_RTC_PLAYBACK_REBUFFER_MS", "120"
 MIC_BARGE_IN_MIN_RMS = 1800.0
 MIC_BARGE_IN_PLAYBACK_RATIO = 0.65
 MIC_BARGE_IN_OPEN_HOLD_S = 0.8
+PAUSE_MIC_DURING_LOCAL_PLAYBACK = os.getenv(
+    "INTERRUPT_RTC_PAUSE_MIC_DURING_LOCAL_PLAYBACK",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
 AEC_RESIDUAL_ECHO_CLEAN_RMS = float(
     os.getenv("INTERRUPT_RTC_AEC_RESIDUAL_ECHO_CLEAN_RMS", "320").strip() or "320"
 )
@@ -36,6 +55,84 @@ AEC_RESIDUAL_ECHO_RAW_RMS = float(
 AEC_RESIDUAL_ECHO_RATIO = float(
     os.getenv("INTERRUPT_RTC_AEC_RESIDUAL_ECHO_RATIO", "0.20").strip() or "0.20"
 )
+RTC_TRANSCRIBE_ENABLED = os.getenv("INTERRUPT_RTC_TRANSCRIBE_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+RTC_TRANSCRIBE_MIN_RMS = float(os.getenv("INTERRUPT_RTC_TRANSCRIBE_MIN_RMS", "220.0").strip() or "220.0")
+RTC_TRANSCRIBE_SILENCE_S = float(os.getenv("INTERRUPT_RTC_TRANSCRIBE_SILENCE_S", "0.85").strip() or "0.85")
+RTC_TRANSCRIBE_MAX_AUDIO_S = float(os.getenv("INTERRUPT_RTC_TRANSCRIBE_MAX_AUDIO_S", "8.0").strip() or "8.0")
+RTC_TRANSCRIBE_MIN_AUDIO_S = float(os.getenv("INTERRUPT_RTC_TRANSCRIBE_MIN_AUDIO_S", "0.45").strip() or "0.45")
+RTC_TRANSCRIBE_TMP_DIR = Path(
+    os.getenv("INTERRUPT_RTC_TRANSCRIBE_TMP_DIR", "/tmp/interrupt_rtc_transcribe").strip()
+    or "/tmp/interrupt_rtc_transcribe"
+)
+RTC_TRANSCRIBE_WORKER = (
+    os.getenv("INTERRUPT_RTC_TRANSCRIBE_WORKER", "").strip()
+    or "/data/HongTu/interrupt/tools/local_funasr_worker.py"
+)
+RTC_TRANSCRIBE_PYTHON = (
+    os.getenv("INTERRUPT_RTC_TRANSCRIBE_PYTHON", "").strip()
+    or "/home/unitree/miniforge3/envs/wakeword-clean/bin/python"
+)
+RTC_TRANSCRIBE_LANGUAGE = (
+    os.getenv("INTERRUPT_RTC_TRANSCRIBE_LANGUAGE", "").strip().lower() or "auto"
+)
+RTC_TEXT_INPUT_ONLY = os.getenv("INTERRUPT_RTC_TEXT_INPUT_ONLY", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_RTC_CJK_CHAR_RE = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_RTC_TRANSCRIPT_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+_RTC_TRANSCRIPT_DIGIT_RE = re.compile(r"\d{2,}")
+_RTC_TRANSCRIPT_CJK_RE = re.compile(rf"[{_RTC_CJK_CHAR_RE}]")
+_RTC_TRANSCRIPT_CORE_RE = re.compile(rf"[A-Za-z0-9{_RTC_CJK_CHAR_RE}]")
+_RTC_TRANSCRIPT_NON_CORE_RE = re.compile(rf"[^A-Za-z0-9{_RTC_CJK_CHAR_RE}]+")
+
+
+def _normalize_transcript_text(text: str) -> str:
+    return " ".join((text or "").split()).strip()
+
+
+def _is_low_value_local_transcript(text: str) -> bool:
+    normalized = _normalize_transcript_text(text)
+    if not normalized:
+        return True
+    if _RTC_TRANSCRIPT_WORD_RE.search(normalized):
+        return False
+    if _RTC_TRANSCRIPT_DIGIT_RE.search(normalized):
+        return False
+    if _RTC_TRANSCRIPT_CJK_RE.search(normalized):
+        core = _RTC_TRANSCRIPT_NON_CORE_RE.sub("", normalized)
+        return len(core) <= 1
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return True
+    if not _RTC_TRANSCRIPT_CORE_RE.search(compact):
+        return True
+    return len(compact) <= 1
+
+
+def _normalize_transcribe_language(raw: str) -> str:
+    normalized = (raw or "").strip().lower()
+    alias_map = {
+        "": "auto",
+        "auto": "auto",
+        "zh": "zh",
+        "zh-cn": "zh",
+        "mandarin": "zh",
+        "chinese": "zh",
+        "yue": "yue",
+        "zh-yue": "yue",
+        "cantonese": "yue",
+        "en": "en",
+        "english": "en",
+    }
+    return alias_map.get(normalized, "auto")
 
 
 def _resolve_audio_device(device: str | None, *, kind: str) -> tuple[str | None, dict]:
@@ -358,6 +455,7 @@ class MicrophonePublisher:
         self._barge_in_open_until = 0.0
         self._last_duck_log_at = 0.0
         self._last_barge_in_log_at = 0.0
+        self._last_local_playback_pause_log_at = 0.0
         self._last_residual_echo_log_at = 0.0
         self._input_delay_s = 0.0
         self._callback_count = 0
@@ -371,6 +469,7 @@ class MicrophonePublisher:
         self._reader_proc: subprocess.Popen[bytes] | None = None
         self._reader_thread: threading.Thread | None = None
         self._use_arecord_backend = False
+        self._transcriber: LocalTranscriber | None = None
 
     async def start(self, room: rtc.Room) -> None:
         device_request = (self._device or "").strip()
@@ -389,6 +488,9 @@ class MicrophonePublisher:
             self._track,
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
         )
+        if RTC_TRANSCRIBE_ENABLED:
+            self._transcriber = LocalTranscriber(room, self._track.sid, self._loop)
+            await self._transcriber.start()
         self._open_stream()
         self._task = asyncio.create_task(self._pump())
         self._last_callback_at = time.monotonic()
@@ -414,6 +516,9 @@ class MicrophonePublisher:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._transcriber is not None:
+            await self._transcriber.aclose()
+            self._transcriber = None
         if self._source is not None:
             await self._source.aclose()
             self._source = None
@@ -612,6 +717,15 @@ class MicrophonePublisher:
         if now - self._last_level_log_at >= 2.0:
             LOGGER.info("RTC microphone level: rms=%.1f peak=%s", rms, peak)
             self._last_level_log_at = now
+        if PAUSE_MIC_DURING_LOCAL_PLAYBACK and local_playback_guard_active():
+            if now - self._last_local_playback_pause_log_at >= 1.0:
+                LOGGER.info(
+                    "RTC microphone paused during local playback guard: mic_rms=%.1f peak=%s",
+                    rms,
+                    peak,
+                )
+                self._last_local_playback_pause_log_at = now
+            mono = np.zeros_like(mono)
         if (
             (self._aec is None or not self._aec.enabled)
             and self._playback is not None
@@ -648,6 +762,8 @@ class MicrophonePublisher:
 
     def _enqueue_chunk(self, chunk: np.ndarray) -> None:
         self._last_queue_push_at = time.monotonic()
+        if self._transcriber is not None:
+            self._transcriber.push_chunk(chunk)
         try:
             self._queue.put_nowait(chunk)
         except asyncio.QueueFull:
@@ -683,8 +799,11 @@ class MicrophonePublisher:
                     frame_samples = self._aec.process_capture(frame_samples)
                     if self._looks_like_residual_echo(raw_frame_samples, frame_samples):
                         frame_samples = np.zeros_like(frame_samples)
+                outbound_samples = (
+                    np.zeros_like(frame_samples) if RTC_TEXT_INPUT_ONLY else frame_samples
+                )
                 frame = rtc.AudioFrame(
-                    data=frame_samples.tobytes(),
+                    data=outbound_samples.tobytes(),
                     samples_per_channel=TARGET_FRAME_SAMPLES,
                     sample_rate=TARGET_SAMPLE_RATE,
                     num_channels=1,
@@ -715,6 +834,302 @@ class MicrophonePublisher:
             )
             self._last_residual_echo_log_at = now
         return True
+
+
+class LocalTranscriber:
+    def __init__(self, room: rtc.Room, track_sid: str, loop: asyncio.AbstractEventLoop) -> None:
+        self._room = room
+        self._track_sid = track_sid
+        self._loop = loop
+        self._queue: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue()
+        self._drain_task: asyncio.Task[None] | None = None
+        self._worker: subprocess.Popen[str] | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._request_lock = threading.Lock()
+        self._last_active_at = 0.0
+        self._segment_started_at = 0.0
+        self._segment_buffers: list[np.ndarray] = []
+        self._language_hint = _normalize_transcribe_language(RTC_TRANSCRIBE_LANGUAGE)
+        self._followup_until = 0.0
+        self._followup_language = ""
+        self._pending_prefix_until = 0.0
+        self._pending_prefix_language = ""
+        self._pending_prefix_text = ""
+
+    async def start(self) -> None:
+        RTC_TRANSCRIBE_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        self._worker = subprocess.Popen(
+            [RTC_TRANSCRIBE_PYTHON, RTC_TRANSCRIBE_WORKER],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        assert self._worker.stdout is not None
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name="interrupt-rtc-local-transcriber-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        self._drain_task = asyncio.create_task(self._drain_results())
+        LOGGER.info(
+            "RTC local transcriber started: worker=%s python=%s language_hint=%s text_input_only=%s watchdog=%s",
+            RTC_TRANSCRIBE_WORKER,
+            RTC_TRANSCRIBE_PYTHON,
+            self._language_hint,
+            RTC_TEXT_INPUT_ONLY,
+            frontgate_watchdog_enabled(),
+        )
+
+    async def aclose(self) -> None:
+        await self._flush_segment(force=True)
+        if self._drain_task is not None:
+            self._drain_task.cancel()
+            try:
+                await self._drain_task
+            except asyncio.CancelledError:
+                pass
+            self._drain_task = None
+        worker = self._worker
+        self._worker = None
+        if worker is not None:
+            try:
+                if worker.stdin is not None:
+                    worker.stdin.close()
+            except Exception:
+                pass
+            try:
+                worker.terminate()
+            except Exception:
+                pass
+        self._reader_thread = None
+
+    def push_chunk(self, chunk: np.ndarray) -> None:
+        now = time.monotonic()
+        level = chunk.astype(np.float32)
+        rms = float(np.sqrt(np.mean(np.square(level)))) if level.size else 0.0
+        active = rms >= RTC_TRANSCRIBE_MIN_RMS
+        if active:
+            if not self._segment_buffers:
+                self._segment_started_at = now
+            self._last_active_at = now
+            self._segment_buffers.append(chunk.copy())
+            if self._segment_duration_s() >= RTC_TRANSCRIBE_MAX_AUDIO_S:
+                asyncio.run_coroutine_threadsafe(self._flush_segment(force=True), self._loop)
+            return
+        if not self._segment_buffers:
+            return
+        if now - self._last_active_at >= RTC_TRANSCRIBE_SILENCE_S:
+            asyncio.run_coroutine_threadsafe(self._flush_segment(), self._loop)
+            return
+        self._segment_buffers.append(chunk.copy())
+        if self._segment_duration_s() >= RTC_TRANSCRIBE_MAX_AUDIO_S:
+            asyncio.run_coroutine_threadsafe(self._flush_segment(force=True), self._loop)
+
+    def _segment_duration_s(self) -> float:
+        if not self._segment_buffers:
+            return 0.0
+        total_samples = sum(chunk.size for chunk in self._segment_buffers)
+        return total_samples / float(TARGET_SAMPLE_RATE)
+
+    async def _flush_segment(self, force: bool = False) -> None:
+        if not self._segment_buffers:
+            return
+        duration_s = self._segment_duration_s()
+        if not force and duration_s < RTC_TRANSCRIBE_MIN_AUDIO_S:
+            self._segment_buffers.clear()
+            self._segment_started_at = 0.0
+            return
+        request_id = uuid.uuid4().hex
+        wav_path = RTC_TRANSCRIBE_TMP_DIR / f"{request_id}.wav"
+        audio = np.concatenate(self._segment_buffers).astype(np.int16, copy=False)
+        self._segment_buffers.clear()
+        self._segment_started_at = 0.0
+        await asyncio.to_thread(self._write_wav, wav_path, audio)
+        payload = {
+            "id": request_id,
+            "wav_path": str(wav_path),
+            "language": self._language_hint,
+        }
+        worker = self._worker
+        if worker is None or worker.stdin is None:
+            LOGGER.warning("RTC local transcriber unavailable; dropped request=%s", request_id)
+            return
+        with self._request_lock:
+            worker.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            worker.stdin.flush()
+
+    def _reader_loop(self) -> None:
+        worker = self._worker
+        if worker is None or worker.stdout is None:
+            return
+        for line in worker.stdout:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            request_id = str(payload.get("id", "") or "")
+            text = str(payload.get("text", "") or "")
+            language = str(payload.get("language", "") or "")
+            error = str(payload.get("error", "") or "")
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._queue.put((request_id, text, language or "zh", error)),
+                    self._loop,
+                )
+            except RuntimeError:
+                return
+
+    async def _drain_results(self) -> None:
+        while True:
+            request_id, text, language, error = await self._queue.get()
+            wav_path = RTC_TRANSCRIBE_TMP_DIR / f"{request_id}.wav"
+            try:
+                wav_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if error:
+                LOGGER.warning("RTC local transcription failed: id=%s error=%s", request_id, error)
+                continue
+            cleaned = _normalize_transcript_text(text)
+            if not cleaned:
+                continue
+            if _is_low_value_local_transcript(cleaned):
+                LOGGER.info(
+                    "RTC local transcription dropped low-value text: id=%s text=%r language=%s",
+                    request_id,
+                    cleaned,
+                    language,
+                )
+                continue
+            if local_playback_guard_active() and should_ignore_transcript(cleaned):
+                LOGGER.info("RTC local transcription dropped probable self-playback echo: text=%r", cleaned)
+                continue
+            accepted_text, accepted_language = self._apply_frontgate_watchdog(cleaned, language)
+            if not accepted_text:
+                continue
+            segment = rtc.TranscriptionSegment(
+                id=request_id,
+                text=accepted_text,
+                start_time=0,
+                end_time=0,
+                language=accepted_language,
+                final=True,
+            )
+            transcription = rtc.Transcription(
+                participant_identity=self._room.local_participant.identity,
+                track_sid=self._track_sid,
+                segments=[segment],
+            )
+            try:
+                if not RTC_TEXT_INPUT_ONLY:
+                    await self._room.local_participant.publish_transcription(transcription)
+                payload = json.dumps(
+                    {
+                        "text": accepted_text,
+                        "language": accepted_language,
+                        "final": True,
+                        "text_input_only": RTC_TEXT_INPUT_ONLY,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                await self._room.local_participant.publish_data(
+                    payload,
+                    topic="interrupt/local_text/transcript",
+                )
+                LOGGER.info(
+                    "RTC local transcription published: identity=%s text=%r language=%s",
+                    self._room.local_participant.identity,
+                    accepted_text,
+                    accepted_language,
+                )
+            except Exception:
+                LOGGER.exception("RTC local transcription publish failed: text=%r", accepted_text)
+
+    def _apply_frontgate_watchdog(self, text: str, language: str) -> tuple[str, str]:
+        normalized_language = normalize_watchdog_language(language)
+        if not frontgate_watchdog_enabled():
+            return text, language
+        if self._pending_prefix_until > time.monotonic():
+            pending_language = self._pending_prefix_language or normalized_language or language
+            merged = f"{self._pending_prefix_text} {text}".strip()
+            if text_starts_with_robot_term(text, language=pending_language) or self._pending_prefix_text:
+                self._clear_pending_prefix_state()
+                decision = evaluate_frontgate_text(merged, default_language=pending_language)
+                if decision.action == "accepted":
+                    self._clear_followup_state()
+                    LOGGER.info(
+                        "RTC frontgate watchdog accepted merged prefix fragments: merged=%r language=%s",
+                        merged,
+                        decision.language or pending_language,
+                    )
+                    return decision.content, decision.language or pending_language
+            self._clear_pending_prefix_state()
+        decision = evaluate_frontgate_text(text, default_language=normalized_language)
+        if decision.action == "accepted":
+            self._clear_followup_state()
+            self._clear_pending_prefix_state()
+            return decision.content, decision.language or language
+        if decision.action == "prefix_only":
+            window_s = followup_window_s()
+            self._followup_until = time.monotonic() + window_s
+            self._followup_language = decision.language
+            self._clear_pending_prefix_state()
+            LOGGER.info(
+                "RTC frontgate watchdog armed follow-up window: language=%s prefix=%r timeout=%.1fs",
+                decision.language,
+                decision.prefix,
+                window_s,
+            )
+            return "", language
+        pending = detect_pending_prefix_fragment(text, default_language=normalized_language)
+        if pending.action == "pending_prefix":
+            window_s = pending_prefix_window_s()
+            self._pending_prefix_until = time.monotonic() + window_s
+            self._pending_prefix_language = pending.language
+            self._pending_prefix_text = pending.prefix
+            LOGGER.info(
+                "RTC frontgate watchdog armed pending-prefix window: language=%s prefix=%r timeout=%.1fs",
+                pending.language,
+                pending.prefix,
+                window_s,
+            )
+            return "", language
+        if self._followup_until > time.monotonic():
+            followup_language = self._followup_language or normalized_language or language
+            self._clear_followup_state()
+            self._clear_pending_prefix_state()
+            LOGGER.info(
+                "RTC frontgate watchdog accepted follow-up without repeated prefix: text=%r language=%s",
+                text,
+                followup_language,
+            )
+            return text, followup_language or language
+        self._clear_pending_prefix_state()
+        LOGGER.info("RTC frontgate watchdog dropped unmatched transcript: text=%r language=%s", text, language)
+        return "", language
+
+    def _clear_followup_state(self) -> None:
+        self._followup_until = 0.0
+        self._followup_language = ""
+
+    def _clear_pending_prefix_state(self) -> None:
+        self._pending_prefix_until = 0.0
+        self._pending_prefix_language = ""
+        self._pending_prefix_text = ""
+
+    @staticmethod
+    def _write_wav(path: Path, audio: np.ndarray) -> None:
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(TARGET_SAMPLE_RATE)
+            handle.writeframes(audio.tobytes())
 
 
 class RobotRtcEndpoint:

@@ -5,6 +5,7 @@ import argparse
 import os
 import pty
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -50,6 +51,15 @@ DEFAULT_SESSION_PROCESS_PATTERNS = (
     "python -m src.agent start",
     "run_frontgate_room_session.sh",
 )
+
+try:
+    from src.cantonese_tts import EdgeCantoneseTts, load_cantonese_tts_config
+except Exception as exc:
+    _CANTONESE_TTS = None
+    _CANTONESE_TTS_IMPORT_ERROR = exc
+else:
+    _CANTONESE_TTS = EdgeCantoneseTts(load_cantonese_tts_config())
+    _CANTONESE_TTS_IMPORT_ERROR = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,30 +187,141 @@ def _wake_intro_text(event: WakeWordEvent) -> str:
     return os.getenv("INTERRUPT_FRONTGATE_WAKE_INTRO_ZH", DEFAULT_INTRO_MANDARIN).strip() or DEFAULT_INTRO_MANDARIN
 
 
-def _local_wake_ack(
+def _resolve_frontgate_cantonese_tts_python() -> str:
+    requested = os.getenv("INTERRUPT_FRONTGATE_CANTONESE_TTS_PYTHON", "").strip()
+    if requested and os.path.isfile(requested) and os.access(requested, os.X_OK):
+        return requested
+    candidates = (
+        str(ROOT_DIR / ".venv" / "bin" / "python"),
+        "/data/HongTu/interrupt/.venv/bin/python",
+        "/home/unitree/HongTu/interrupt/.venv/bin/python",
+        "/home/unitree/HongTu/OM1/.venv-g1-runtime/bin/python",
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return requested or "python3"
+
+
+def _resolve_frontgate_cantonese_tts_script() -> str:
+    requested = os.getenv("INTERRUPT_FRONTGATE_CANTONESE_TTS_SCRIPT", "").strip()
+    if requested and os.path.isfile(requested):
+        return requested
+    candidates = (
+        str(ROOT_DIR / "tools" / "cantonese_tts_speak.py"),
+        "/data/HongTu/interrupt/tools/cantonese_tts_speak.py",
+        "/home/unitree/HongTu/interrupt/tools/cantonese_tts_speak.py",
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return requested or str(ROOT_DIR / "tools" / "cantonese_tts_speak.py")
+
+
+def _speak_cantonese_via_helper(text: str) -> tuple[bool, str, str]:
+    helper_python = _resolve_frontgate_cantonese_tts_python()
+    helper_script = _resolve_frontgate_cantonese_tts_script()
+    if not shutil.which(helper_python) and not (os.path.isfile(helper_python) and os.access(helper_python, os.X_OK)):
+        return False, "", f"cantonese helper python unavailable: {helper_python}"
+    if not os.path.isfile(helper_script):
+        return False, "", f"cantonese helper script unavailable: {helper_script}"
+    env = os.environ.copy()
+    env["INTERRUPT_CANTONESE_TTS_ENABLED"] = env.get("INTERRUPT_CANTONESE_TTS_ENABLED", "1") or "1"
+    env["INTERRUPT_CANTONESE_TTS_VOICE"] = (
+        env.get("INTERRUPT_CANTONESE_TTS_VOICE", "").strip() or "zh-HK-HiuGaaiNeural"
+    )
+    result = subprocess.run(
+        [helper_python, helper_script, text],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+
+
+def _speak_frontgate_cantonese(text: str) -> tuple[bool, str, str]:
+    speak_ok, speak_stdout, speak_stderr = _speak_cantonese_via_helper(text)
+    if speak_ok:
+        return True, speak_stdout, speak_stderr
+    if _CANTONESE_TTS is not None and _CANTONESE_TTS.enabled:
+        try:
+            direct_ok = bool(_CANTONESE_TTS.synthesize_and_play(text))
+            if direct_ok:
+                return True, speak_stdout, speak_stderr
+            return False, speak_stdout, speak_stderr or "cantonese_tts returned false"
+        except Exception as exc:
+            return False, speak_stdout, str(exc)
+    if _CANTONESE_TTS_IMPORT_ERROR is not None:
+        return False, speak_stdout, speak_stderr or f"cantonese_tts unavailable: {_CANTONESE_TTS_IMPORT_ERROR}"
+    return False, speak_stdout, speak_stderr or "cantonese_tts disabled"
+
+
+def _intro_done_signal_path() -> Path:
+    requested_dir = os.getenv("INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_DIR", "").strip()
+    requested = os.getenv("INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_FILE", "").strip()
+    if requested:
+        return Path(requested).expanduser()
+    stamp = f"{os.getpid()}-{int(time.time() * 1000)}"
+    base_dir = Path(requested_dir).expanduser() if requested_dir else Path("/tmp")
+    return base_dir / f"interrupt_frontgate_intro_done_{stamp}.signal"
+
+
+def _mark_intro_done(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("done\n", encoding="utf-8")
+    except Exception as exc:
+        print(f"[FrontGate] intro_done_signal write failed path={path} error={exc}", flush=True)
+
+
+def _start_local_wake_intro(
     adapter: G1Om1Adapter,
     event: WakeWordEvent,
+    intro_done_signal_path: Path | None,
 ) -> subprocess.Popen[bytes] | None:
-    if not adapter.available:
-        print("[FrontGate] local wake ack skipped: G1/OM1 adapter unavailable", flush=True)
-        return None
+    active_led_proc = _start_active_led(adapter) if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_LED", True) else None
+    if not _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK", True):
+        _mark_intro_done(intro_done_signal_path)
+        return active_led_proc
 
-    if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_ACK", True):
-        if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO", False):
-            reply = _wake_intro_text(event)
-        else:
-            reply = os.getenv("INTERRUPT_FRONTGATE_WAKE_ACK_TEXT", DEFAULT_WAKE_ACK).strip() or DEFAULT_WAKE_ACK
-        speak_result = adapter.speak(reply)
-        if speak_result.ok:
-            note_local_playback(reply, language=_wake_language(event))
-        print(
-            f"[FrontGate] wake_ack wakeword={event.wakeword} reply={reply} ok={speak_result.ok} stdout={speak_result.stdout!r} stderr={speak_result.stderr!r}",
-            flush=True,
-        )
+    if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_INTRO", False):
+        reply = _wake_intro_text(event)
+    else:
+        reply = os.getenv("INTERRUPT_FRONTGATE_WAKE_ACK_TEXT", DEFAULT_WAKE_ACK).strip() or DEFAULT_WAKE_ACK
+    wake_language = _wake_language(event)
 
-    if _env_flag("INTERRUPT_FRONTGATE_ENABLE_WAKE_LED", True):
-        return _start_active_led(adapter)
-    return None
+    def _worker() -> None:
+        speak_ok = False
+        speak_stdout = ""
+        speak_stderr = ""
+        try:
+            if wake_language == "zh-YUE":
+                speak_ok, speak_stdout, speak_stderr = _speak_frontgate_cantonese(reply)
+            elif not adapter.available:
+                print("[FrontGate] local wake intro skipped: G1/OM1 adapter unavailable", flush=True)
+            if not speak_ok and wake_language != "zh-YUE" and adapter.available:
+                speak_result = adapter.speak(reply)
+                speak_ok = speak_result.ok
+                speak_stdout = speak_result.stdout
+                speak_stderr = speak_result.stderr
+            if speak_ok:
+                note_local_playback(reply, language=wake_language)
+            print(
+                f"[FrontGate] wake_intro wakeword={event.wakeword} language={wake_language} reply={reply} ok={speak_ok} stdout={speak_stdout!r} stderr={speak_stderr!r}",
+                flush=True,
+            )
+        finally:
+            _mark_intro_done(intro_done_signal_path)
+
+    threading.Thread(
+        target=_worker,
+        name="interrupt-frontgate-intro",
+        daemon=True,
+    ).start()
+    return active_led_proc
 
 
 def _restore_idle_led(
@@ -259,6 +380,7 @@ def _launch_session(
     session_command: str,
     event: WakeWordEvent,
     *,
+    intro_done_signal_path: Path | None,
     timeout_s: float,
 ) -> int:
     _wait_for_console_input_device()
@@ -266,6 +388,13 @@ def _launch_session(
     env = os.environ.copy()
     env["INTERRUPT_WAKE_EVENT_WAKEWORD"] = event.wakeword
     env["INTERRUPT_WAKE_EVENT_TEXT"] = event.text
+    env["INTERRUPT_WAKE_EVENT_LANGUAGE"] = _wake_language(event)
+    if intro_done_signal_path is not None:
+        env["INTERRUPT_FRONTGATE_INTRO_DONE_SIGNAL_FILE"] = str(intro_done_signal_path)
+    metadata = getattr(event, "metadata", {}) or {}
+    env["INTERRUPT_WAKE_EVENT_DETECTED_LANG"] = str(
+        metadata.get("language") or metadata.get("detected_lang") or ""
+    ).strip()
     print(f"[FrontGate] session_cmd={' '.join(command)}", flush=True)
     master_fd, slave_fd = pty.openpty()
     proc = subprocess.Popen(
@@ -537,14 +666,28 @@ def main() -> int:
                 f"[FrontGate] wake_detected wakeword={event.wakeword} text={event.text}",
                 flush=True,
             )
-            active_led_proc = _local_wake_ack(adapter, event)
+            intro_done_signal_path = _intro_done_signal_path()
+            try:
+                intro_done_signal_path.unlink()
+            except FileNotFoundError:
+                pass
+            active_led_proc = _start_local_wake_intro(
+                adapter,
+                event,
+                intro_done_signal_path,
+            )
             returncode = _launch_session(
                 args.session_command,
                 event,
+                intro_done_signal_path=intro_done_signal_path,
                 timeout_s=args.session_timeout,
             )
             print(f"[FrontGate] session_exit returncode={returncode}", flush=True)
             _restore_idle_led(adapter, active_led_proc)
+            try:
+                intro_done_signal_path.unlink()
+            except FileNotFoundError:
+                pass
             gate.close()
             gate = None
             _wait_for_wake_capture_device_release()

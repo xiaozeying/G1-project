@@ -133,10 +133,41 @@ def _root_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _strip_process_proxy_env() -> None:
+    if not os.getenv("INTERRUPT_GEMINI_PROXY", "").strip():
+        for key in (
+            "GEMINI_WSS_PROXY",
+            "WSS_PROXY",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "https_proxy",
+            "http_proxy",
+        ):
+            value = os.getenv(key, "").strip()
+            if value:
+                os.environ["INTERRUPT_GEMINI_PROXY"] = value
+                break
+
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "WSS_PROXY",
+        "WS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "wss_proxy",
+        "ws_proxy",
+    ):
+        os.environ.pop(key, None)
+
+
 def load_environment() -> None:
     root = _root_dir()
     load_dotenv(root / ".env.local", override=False)
     load_dotenv(root / ".env", override=False)
+    _strip_process_proxy_env()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
