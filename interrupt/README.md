@@ -106,6 +106,7 @@ cp deploy/compose/env.voice-stack.example deploy/compose/env.voice-stack
 - [interrupt-voice-stack-compose.service](./deploy/systemd/user/interrupt-voice-stack-compose.service)
 - [scripts/mode.sh](./scripts/mode.sh)
 - [scripts/recover.sh](./scripts/recover.sh)
+- [VOICE_STACK_ROBOT_DEPLOYMENT_VALIDATION_2026-06-08.md](./docs/VOICE_STACK_ROBOT_DEPLOYMENT_VALIDATION_2026-06-08.md)
 
 统一容器运行面的最小闭环是：
 
@@ -115,6 +116,11 @@ cp deploy/compose/env.voice-stack.example deploy/compose/env.voice-stack
 ./scripts/mode.sh offline
 ./deploy/compose/deploy_robot_voice_stack_over_ssh.sh --activate
 ```
+
+真实机器人首次部署时还需要额外记住两点：
+
+- `online` 现在按最小集启动，只拉起 `online-brain + wakeword-frontgate`
+- 机器人首次构建 runtime image 可能很慢，应优先参考 `VOICE_STACK_ROBOT_DEPLOYMENT_VALIDATION_2026-06-08.md` 排查 Docker proxy、镜像源和 build 网络问题
 
 ## 4. 总体版图
 
