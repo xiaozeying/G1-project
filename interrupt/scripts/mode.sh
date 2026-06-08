@@ -28,9 +28,22 @@ ensure_env() {
 }
 
 apply_stack_mode() {
+  local mode="$1"
   "${ENSURE_COMPOSE}"
-  "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
-    ollama offline-brain online-brain wakeword-frontgate
+  case "${mode}" in
+    online)
+      "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
+        online-brain wakeword-frontgate
+      ;;
+    offline)
+      "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
+        ollama offline-brain wakeword-frontgate
+      ;;
+    *)
+      echo "unsupported mode for apply_stack_mode: ${mode}" >&2
+      exit 1
+      ;;
+  esac
   "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" ps
 }
 
@@ -40,7 +53,7 @@ main() {
     online|offline)
       ensure_env
       INTERRUPT_DIALOGUE_MODE_SKIP_RESTART=1 "${SWITCH_SCRIPT}" "${mode}"
-      apply_stack_mode
+      apply_stack_mode "${mode}"
       ;;
     status)
       INTERRUPT_DIALOGUE_MODE_SKIP_RESTART=1 "${SWITCH_SCRIPT}" status

@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/data/HongTu/interrupt
-ExecStart=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.voice-stack -f /data/HongTu/interrupt/deploy/compose/docker-compose.voice-stack.yaml up -d --build ollama offline-brain online-brain wakeword-frontgate
+ExecStart=/bin/bash /data/HongTu/interrupt/scripts/recover.sh
 ExecStop=/data/HongTu/interrupt/deploy/compose/composectl.sh --env-file /data/HongTu/interrupt/deploy/compose/env.voice-stack -f /data/HongTu/interrupt/deploy/compose/docker-compose.voice-stack.yaml stop wakeword-frontgate online-brain offline-brain ollama
 TimeoutStartSec=0
 

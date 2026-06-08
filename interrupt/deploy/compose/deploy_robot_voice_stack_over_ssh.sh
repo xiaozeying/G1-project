@@ -7,6 +7,7 @@ ROBOT_HOST="${ROBOT_HOST:-unitree@192.168.100.30}"
 ROBOT_HOME="${ROBOT_HOME:-/data/HongTu}"
 ROBOT_INTERRUPT_DIR="${ROBOT_INTERRUPT_DIR:-${ROBOT_HOME}/interrupt}"
 ROBOT_COMPOSE_DIR="${ROBOT_INTERRUPT_DIR}/deploy/compose"
+ROBOT_SCRIPTS_DIR="${ROBOT_INTERRUPT_DIR}/scripts"
 ROBOT_SERVICE_DIR="${ROBOT_SERVICE_DIR:-/home/unitree/.config/systemd/user}"
 ACTIVATE=0
 
@@ -24,7 +25,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ssh -o StrictHostKeyChecking=no "${ROBOT_HOST}" "\
-  mkdir -p ${ROBOT_COMPOSE_DIR} ${ROBOT_SERVICE_DIR} \
+  mkdir -p ${ROBOT_COMPOSE_DIR} ${ROBOT_SCRIPTS_DIR} ${ROBOT_SERVICE_DIR} \
     ${ROBOT_INTERRUPT_DIR}/volumes/frontgate_shared \
     ${ROBOT_INTERRUPT_DIR}/volumes/ollama-models"
 
@@ -38,6 +39,11 @@ scp -o StrictHostKeyChecking=no \
   "${ROBOT_HOST}:${ROBOT_COMPOSE_DIR}/"
 
 scp -o StrictHostKeyChecking=no \
+  "${ROOT_DIR}/scripts/mode.sh" \
+  "${ROOT_DIR}/scripts/recover.sh" \
+  "${ROBOT_HOST}:${ROBOT_SCRIPTS_DIR}/"
+
+scp -o StrictHostKeyChecking=no \
   "${ROOT_DIR}/deploy/systemd/user/interrupt-voice-stack-compose.service" \
   "${ROBOT_HOST}:${ROBOT_SERVICE_DIR}/interrupt-voice-stack-compose.service"
 
@@ -48,16 +54,15 @@ ssh -o StrictHostKeyChecking=no "${ROBOT_HOST}" "\
     ${ROBOT_COMPOSE_DIR}/backup_robot_over_ssh.sh && \
   if [ ! -f ${ROBOT_COMPOSE_DIR}/env.voice-stack ]; then \
     cp ${ROBOT_COMPOSE_DIR}/env.voice-stack.example ${ROBOT_COMPOSE_DIR}/env.voice-stack; \
+  fi && \
+  if ! grep -q '^HOST_INTERRUPT_RUNTIME_BASE_IMAGE=' ${ROBOT_COMPOSE_DIR}/env.voice-stack; then \
+    printf '%s\n' 'HOST_INTERRUPT_RUNTIME_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim' >> ${ROBOT_COMPOSE_DIR}/env.voice-stack; \
   fi"
 
 if [[ "${ACTIVATE}" == "1" ]]; then
   ssh -o StrictHostKeyChecking=no "${ROBOT_HOST}" "\
     cd ${ROBOT_INTERRUPT_DIR} && \
-    ${ROBOT_COMPOSE_DIR}/ensure_docker_compose.sh && \
-    ${ROBOT_COMPOSE_DIR}/composectl.sh \
-      --env-file ${ROBOT_COMPOSE_DIR}/env.voice-stack \
-      -f ${ROBOT_COMPOSE_DIR}/docker-compose.voice-stack.yaml \
-      up -d --build ollama offline-brain online-brain wakeword-frontgate && \
+    bash ${ROBOT_INTERRUPT_DIR}/scripts/recover.sh && \
     systemctl --user daemon-reload && \
     systemctl --user enable --now interrupt-voice-stack-compose.service"
 fi

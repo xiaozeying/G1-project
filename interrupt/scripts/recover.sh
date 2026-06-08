@@ -66,9 +66,22 @@ apply_requested_mode() {
 }
 
 up_stack() {
+  local mode="$1"
   "${ENSURE_COMPOSE}"
-  "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
-    ollama offline-brain online-brain wakeword-frontgate
+  case "${mode}" in
+    online)
+      "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
+        online-brain wakeword-frontgate
+      ;;
+    offline)
+      "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" up -d --build \
+        ollama offline-brain wakeword-frontgate
+      ;;
+    *)
+      echo "unsupported mode for up_stack: ${mode}" >&2
+      exit 1
+      ;;
+  esac
   "${COMPOSECTL}" --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" ps
 }
 
@@ -111,7 +124,7 @@ main() {
   local effective_mode
   effective_mode="$(current_mode)"
   echo "voice-stack recover mode: ${effective_mode}"
-  up_stack
+  up_stack "${effective_mode}"
   healthcheck "${effective_mode}"
 }
 

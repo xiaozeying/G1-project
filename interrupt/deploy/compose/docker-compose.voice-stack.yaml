@@ -3,6 +3,9 @@ services:
     build:
       context: ${HOST_REPO_ROOT:-../..}
       dockerfile: interrupt/deploy/compose/Dockerfile
+      network: host
+      args:
+        PYTHON_BASE_IMAGE: ${HOST_INTERRUPT_RUNTIME_BASE_IMAGE:-python:3.10-slim}
     image: hongtu/interrupt-runtime:latest
     container_name: hongtu-wakeword-frontgate
     restart: unless-stopped
@@ -42,11 +45,6 @@ services:
       - bash
       - -lc
       - cd "${HOST_INTERRUPT_DIR}" && ./run_robot_frontgate_session.sh
-    depends_on:
-      online-brain:
-        condition: service_healthy
-      offline-brain:
-        condition: service_healthy
     logging:
       options:
         max-size: 10m
@@ -56,6 +54,9 @@ services:
     build:
       context: ${HOST_REPO_ROOT:-../..}
       dockerfile: interrupt/deploy/compose/Dockerfile
+      network: host
+      args:
+        PYTHON_BASE_IMAGE: ${HOST_INTERRUPT_RUNTIME_BASE_IMAGE:-python:3.10-slim}
     image: hongtu/interrupt-runtime:latest
     container_name: hongtu-online-brain
     restart: unless-stopped
@@ -122,6 +123,9 @@ services:
     build:
       context: ${HOST_REPO_ROOT:-../..}
       dockerfile: interrupt/deploy/compose/Dockerfile
+      network: host
+      args:
+        PYTHON_BASE_IMAGE: ${HOST_INTERRUPT_RUNTIME_BASE_IMAGE:-python:3.10-slim}
     image: hongtu/interrupt-runtime:latest
     container_name: hongtu-offline-brain
     restart: unless-stopped
